@@ -31,6 +31,10 @@ function Invoke-OpenSpecMarkdownCleanup {
     $result = $tocResult.Markdown
     foreach ($issue in $tocResult.Issues) { [void]$issues.Add($issue) }
 
+    $guidResult = Resolve-OpenSpecGuidSectionAnchors -Markdown $result
+    $result = $guidResult.Markdown
+    foreach ($issue in $guidResult.Issues) { [void]$issues.Add($issue) }
+
     $mathResult = ConvertTo-OpenSpecNormalizedMathText -Markdown $result
     $result = $mathResult.Markdown
     foreach ($issue in $mathResult.Issues) { [void]$issues.Add($issue) }
@@ -672,7 +676,7 @@ function ConvertTo-OpenSpecInternalLinks {
                 if ($frag) { $frag } else { '#' }
             }
             else {
-                "../$id/index.md$frag"
+                "../$id/$id.md$frag"
             }
             $rewriteCount++
             if ($rewriteSamples.Count -lt $sampleCap) {
@@ -817,6 +821,96 @@ function ConvertTo-OpenSpecNormalizedMathText {
     }
 }
 
+function Resolve-OpenSpecGuidSectionAnchors {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $issues = New-Object System.Collections.Generic.List[object]
+    $result = $Markdown
+    $rewriteCount = 0
+
+    # Build a mapping from GUID-based anchors to human-readable Section_X.Y.Z
+    # anchors. In the converted markdown, each heading is preceded by a pair of
+    # anchor tags:
+    #   <a id="section_<GUID>"></a>
+    #   <a id="Section_X.Y.Z"></a>
+    # Cross-reference links in the body text reference sections using the GUID
+    # form (#Section_<GUID> or #section_<GUID>), which is both unreadable and
+    # may not resolve due to a case mismatch (the bookmark anchor uses
+    # lowercase "section_" while the hyperlink uses "Section_"). Replacing
+    # these with the Section_X.Y.Z form fixes both issues.
+    $guidToSection = @{}
+
+    # Order 1: GUID anchor followed by Section anchor (most common)
+    $pairRegex1 = [regex]::new(
+        '<a\s+id="section_(?<guid>[0-9a-f]{32})"></a>\s*\r?\n<a\s+id="(?<section>Section_\d+(?:\.\d+)*)"></a>',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    foreach ($m in $pairRegex1.Matches($result)) {
+        $guid = $m.Groups['guid'].Value.ToLowerInvariant()
+        if (-not $guidToSection.ContainsKey($guid)) {
+            $guidToSection[$guid] = $m.Groups['section'].Value
+        }
+    }
+
+    # Order 2: Section anchor followed by GUID anchor (fallback)
+    $pairRegex2 = [regex]::new(
+        '<a\s+id="(?<section>Section_\d+(?:\.\d+)*)"></a>\s*\r?\n<a\s+id="section_(?<guid>[0-9a-f]{32})"></a>',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    foreach ($m in $pairRegex2.Matches($result)) {
+        $guid = $m.Groups['guid'].Value.ToLowerInvariant()
+        if (-not $guidToSection.ContainsKey($guid)) {
+            $guidToSection[$guid] = $m.Groups['section'].Value
+        }
+    }
+
+    if ($guidToSection.Count -eq 0) {
+        return [pscustomobject]@{
+            Markdown = $result
+            Issues = $issues.ToArray()
+        }
+    }
+
+    # Rewrite all link targets that reference GUID-based section anchors.
+    # Matches both (#Section_GUID) and (#section_GUID) forms.
+    $rewriteCounter = @{ Value = 0 }
+    $result = [regex]::Replace(
+        $result,
+        '\(#[Ss]ection_(?<guid>[0-9a-f]{32})\)',
+        {
+            param($m)
+            $guid = $m.Groups['guid'].Value.ToLowerInvariant()
+            if ($guidToSection.ContainsKey($guid)) {
+                $rewriteCounter.Value++
+                "(#$($guidToSection[$guid]))"
+            }
+            else {
+                $m.Value
+            }
+        }
+    )
+    $rewriteCount = $rewriteCounter.Value
+
+    if ($rewriteCount -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'GuidAnchorResolved'
+            Severity = 'Info'
+            Count = $rewriteCount
+            MappedAnchors = $guidToSection.Count
+            Reason = 'GUID-based section anchors were resolved to section number anchors.'
+        })
+    }
+
+    [pscustomobject]@{
+        Markdown = $result
+        Issues = $issues.ToArray()
+    }
+}
+
 function Resolve-OpenSpecLinkTarget {
     [CmdletBinding()]
     param(
@@ -841,7 +935,7 @@ function Resolve-OpenSpecLinkTarget {
             return [pscustomobject]@{ Url = if ($fragment) { $fragment } else { '#' }; Rewritten = $true }
         }
 
-        return [pscustomobject]@{ Url = "../$targetId/index.md$fragment"; Rewritten = $true }
+        return [pscustomobject]@{ Url = "../$targetId/$targetId.md$fragment"; Rewritten = $true }
     }
 
     if ($decoded -match '(?i)(?:https?://learn\.microsoft\.com)?/?openspecs/windows_protocols/(?<slug>(?:ms|mc)-[a-z0-9-]+)(?:/[^#?]+)?') {
@@ -850,7 +944,7 @@ function Resolve-OpenSpecLinkTarget {
             return [pscustomobject]@{ Url = if ($fragment) { $fragment } else { '#' }; Rewritten = $true }
         }
 
-        return [pscustomobject]@{ Url = "../$targetId/index.md$fragment"; Rewritten = $true }
+        return [pscustomobject]@{ Url = "../$targetId/$targetId.md$fragment"; Rewritten = $true }
     }
 
     if ($decoded -match '(?i)%5b(?<id>(?:MS|MC)-[A-Z0-9-]+)%5d\.(?:pdf|docx)$') {
@@ -859,7 +953,7 @@ function Resolve-OpenSpecLinkTarget {
             return [pscustomobject]@{ Url = if ($fragment) { $fragment } else { '#' }; Rewritten = $true }
         }
 
-        return [pscustomobject]@{ Url = "../$targetId/index.md$fragment"; Rewritten = $true }
+        return [pscustomobject]@{ Url = "../$targetId/$targetId.md$fragment"; Rewritten = $true }
     }
 
     return [pscustomobject]@{ Url = $Url; Rewritten = $false }

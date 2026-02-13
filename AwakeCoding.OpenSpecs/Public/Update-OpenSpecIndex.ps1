@@ -26,6 +26,11 @@ function Update-OpenSpecIndex {
 
         $mdFileName = [System.IO.Path]::GetFileName($mdFile)
 
+        # Extract the title from line 3 of the markdown.
+        # Expected format:
+        #   Line 1: **[MS-RDPECLIP]:**
+        #   Line 2: (blank)
+        #   Line 3: **Remote Desktop Protocol: Clipboard Virtual Channel Extension**
         $lines = Get-Content -LiteralPath $mdFile -TotalCount 5 -ErrorAction SilentlyContinue
         $title = ''
         if ($lines -and $lines.Count -ge 3) {
