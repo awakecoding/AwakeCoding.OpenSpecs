@@ -676,7 +676,7 @@ function ConvertTo-OpenSpecInternalLinks {
                 if ($frag) { $frag } else { '#' }
             }
             else {
-                "../$id/index.md$frag"
+                "../$id/$id.md$frag"
             }
             $rewriteCount++
             if ($rewriteSamples.Count -lt $sampleCap) {
@@ -935,7 +935,7 @@ function Resolve-OpenSpecLinkTarget {
             return [pscustomobject]@{ Url = if ($fragment) { $fragment } else { '#' }; Rewritten = $true }
         }
 
-        return [pscustomobject]@{ Url = "../$targetId/index.md$fragment"; Rewritten = $true }
+        return [pscustomobject]@{ Url = "../$targetId/$targetId.md$fragment"; Rewritten = $true }
     }
 
     if ($decoded -match '(?i)(?:https?://learn\.microsoft\.com)?/?openspecs/windows_protocols/(?<slug>(?:ms|mc)-[a-z0-9-]+)(?:/[^#?]+)?') {
@@ -944,7 +944,7 @@ function Resolve-OpenSpecLinkTarget {
             return [pscustomobject]@{ Url = if ($fragment) { $fragment } else { '#' }; Rewritten = $true }
         }
 
-        return [pscustomobject]@{ Url = "../$targetId/index.md$fragment"; Rewritten = $true }
+        return [pscustomobject]@{ Url = "../$targetId/$targetId.md$fragment"; Rewritten = $true }
     }
 
     if ($decoded -match '(?i)%5b(?<id>(?:MS|MC)-[A-Z0-9-]+)%5d\.(?:pdf|docx)$') {
@@ -953,7 +953,7 @@ function Resolve-OpenSpecLinkTarget {
             return [pscustomobject]@{ Url = if ($fragment) { $fragment } else { '#' }; Rewritten = $true }
         }
 
-        return [pscustomobject]@{ Url = "../$targetId/index.md$fragment"; Rewritten = $true }
+        return [pscustomobject]@{ Url = "../$targetId/$targetId.md$fragment"; Rewritten = $true }
     }
 
     return [pscustomobject]@{ Url = $Url; Rewritten = $false }

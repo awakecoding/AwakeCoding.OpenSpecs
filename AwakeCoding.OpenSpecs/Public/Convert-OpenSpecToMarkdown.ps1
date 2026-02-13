@@ -89,7 +89,7 @@ function Convert-OpenSpecToMarkdown {
                 [void](New-Item -Path $artifactDirectory -ItemType Directory -Force)
             }
 
-            $markdownPath = Join-Path -Path $specDirectory -ChildPath 'index.md'
+            $markdownPath = Join-Path -Path $specDirectory -ChildPath "$safeProtocol.md"
             if ((Test-Path -LiteralPath $markdownPath) -and -not $Force) {
                 [pscustomobject]@{
                     PSTypeName = 'AwakeCoding.OpenSpecs.ConversionResult'
