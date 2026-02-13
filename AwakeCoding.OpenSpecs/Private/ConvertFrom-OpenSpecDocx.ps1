@@ -845,6 +845,118 @@ function Add-OpenSpecSectionAnchorsFromToc {
     return $result
 }
 
+function Test-OpenSpecOpenXmlPacketDiagram {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Xml.XmlNode]$TableNode,
+
+        [Parameter(Mandatory)]
+        [System.Xml.XmlNamespaceManager]$NamespaceManager
+    )
+
+    # Detect packet layout tables by checking if the first row contains
+    # cells with the PacketDiagramHeaderText paragraph style.
+    $firstRow = $TableNode.SelectSingleNode('./w:tr[1]', $NamespaceManager)
+    if ($null -eq $firstRow) {
+        return $false
+    }
+
+    $firstCell = $firstRow.SelectSingleNode('./w:tc[1]', $NamespaceManager)
+    if ($null -eq $firstCell) {
+        return $false
+    }
+
+    $styleNode = $firstCell.SelectSingleNode('.//w:pStyle', $NamespaceManager)
+    if ($null -eq $styleNode) {
+        return $false
+    }
+
+    $styleName = $styleNode.GetAttribute('val', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+    return ($styleName -eq 'PacketDiagramHeaderText')
+}
+
+function ConvertFrom-OpenSpecOpenXmlPacketDiagram {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Xml.XmlNode]$TableNode,
+
+        [Parameter(Mandatory)]
+        [System.Xml.XmlNamespaceManager]$NamespaceManager
+    )
+
+    $wNs = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    $rowNodes = $TableNode.SelectNodes('./w:tr', $NamespaceManager)
+    if ($null -eq $rowNodes -or $rowNodes.Count -lt 2) {
+        return @()
+    }
+
+    $bitOffset = 0
+    # Each entry: @{ StartBit; EndBit; Label }
+    $fields = New-Object System.Collections.Generic.List[hashtable]
+
+    # Skip the first row (header with bit position labels).
+    for ($rowIdx = 1; $rowIdx -lt $rowNodes.Count; $rowIdx++) {
+        $rowNode = $rowNodes[$rowIdx]
+        $cellNodes = $rowNode.SelectNodes('./w:tc', $NamespaceManager)
+
+        foreach ($cellNode in $cellNodes) {
+            # Determine the column span (bit width) from w:gridSpan.
+            $gridSpanNode = $cellNode.SelectSingleNode('./w:tcPr/w:gridSpan', $NamespaceManager)
+            $span = 1
+            if ($null -ne $gridSpanNode) {
+                $spanVal = $gridSpanNode.GetAttribute('val', $wNs)
+                if (-not [string]::IsNullOrWhiteSpace($spanVal)) {
+                    $span = [int]$spanVal
+                }
+            }
+
+            # Extract the cell text.
+            $textParts = New-Object System.Collections.Generic.List[string]
+            $textNodes = $cellNode.SelectNodes('.//w:t', $NamespaceManager)
+            foreach ($tNode in $textNodes) {
+                if (-not [string]::IsNullOrWhiteSpace($tNode.InnerText)) {
+                    $textParts.Add($tNode.InnerText)
+                }
+            }
+            $cellText = ($textParts.ToArray() -join '').Trim()
+
+            # Continuation cells ("...") or empty cells extend the previous field.
+            if ($cellText -eq '...' -or [string]::IsNullOrWhiteSpace($cellText)) {
+                if ($fields.Count -gt 0) {
+                    $fields[$fields.Count - 1].EndBit = $bitOffset + $span - 1
+                }
+                $bitOffset += $span
+                continue
+            }
+
+            $startBit = $bitOffset
+            $endBit = $bitOffset + $span - 1
+            $fields.Add(@{ StartBit = $startBit; EndBit = $endBit; Label = $cellText })
+            $bitOffset += $span
+        }
+    }
+
+    if ($fields.Count -eq 0) {
+        return @()
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('```mermaid')
+    $lines.Add('packet-beta')
+    foreach ($field in $fields) {
+        $s = $field.StartBit
+        $e = $field.EndBit
+        $label = $field.Label
+        $lines.Add("  ${s}-${e}: `"${label}`"")
+    }
+    $lines.Add('```')
+    $lines.Add('')
+
+    return $lines.ToArray()
+}
+
 function ConvertFrom-OpenSpecOpenXmlTable {
     [CmdletBinding()]
     param(
@@ -863,6 +975,14 @@ function ConvertFrom-OpenSpecOpenXmlTable {
         [Parameter()]
         [string]$MediaOutputDirectory
     )
+
+    # Check if this is a packet diagram table — route to mermaid converter if so.
+    if (Test-OpenSpecOpenXmlPacketDiagram -TableNode $TableNode -NamespaceManager $NamespaceManager) {
+        $mermaidResult = ConvertFrom-OpenSpecOpenXmlPacketDiagram -TableNode $TableNode -NamespaceManager $NamespaceManager
+        if ($mermaidResult.Count -gt 0) {
+            return $mermaidResult
+        }
+    }
 
     $rows = New-Object System.Collections.Generic.List[object]
     $maxColumns = 0
