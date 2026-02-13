@@ -11,7 +11,11 @@ function Convert-OpenSpecToMarkdown {
         [ValidateSet('Auto', 'DOCX', 'PDF')]
         [string]$SourceFormat = 'Auto',
 
-        [switch]$Force
+        [switch]$Force,
+
+        [switch]$Parallel,
+
+        [int]$ThrottleLimit = 4
     )
 
     begin {
@@ -37,6 +41,19 @@ function Convert-OpenSpecToMarkdown {
 
         if ($items.Count -eq 0) {
             throw 'Provide InputObject or Path for conversion.'
+        }
+
+        $useParallel = $Parallel -and $PSVersionTable.PSVersion.Major -ge 7 -and $items.Count -gt 1
+        if ($useParallel) {
+            $moduleBase = (Get-Module AwakeCoding.OpenSpecs).ModuleBase
+            $outputPathArg = $OutputPath
+            $forceArg = $Force
+            $sourceFormatArg = $SourceFormat
+            $items | ForEach-Object -Parallel {
+                Import-Module (Join-Path $using:moduleBase 'AwakeCoding.OpenSpecs.psd1') -Force | Out-Null
+                Convert-OpenSpecToMarkdown -Path $_.Path -OutputPath $using:outputPathArg -Force:$using:forceArg -SourceFormat $using:sourceFormatArg
+            } -ThrottleLimit $ThrottleLimit
+            return
         }
 
         $toolchain = Get-OpenSpecToolchain
@@ -109,6 +126,7 @@ function Convert-OpenSpecToMarkdown {
             }
 
             $conversionStep = $null
+            try {
             if ($resolvedFormat -eq 'DOCX') {
                 $toolchain = Get-OpenSpecToolchain -RequireDocxConverter
                 $rawMarkdownPath = Join-Path -Path $artifactDirectory -ChildPath 'raw-docx.md'
@@ -214,6 +232,26 @@ function Convert-OpenSpecToMarkdown {
                 WarningCount = $warningCount
                 ErrorCount = $errorCount
                 ReportPath = $reportPath
+            }
+            }
+            catch {
+                $errMsg = $_.Exception.Message
+                Write-Warning "Conversion failed for $protocolId : $errMsg"
+                [pscustomobject]@{
+                    PSTypeName = 'AwakeCoding.OpenSpecs.ConversionResult'
+                    ProtocolId = $protocolId
+                    SourcePath = $sourcePath
+                    SourceFormat = $resolvedFormat
+                    MarkdownPath = $null
+                    Status = 'Failed'
+                    Strategy = $null
+                    IssueCount = 0
+                    InfoCount = 0
+                    WarningCount = 0
+                    ErrorCount = 1
+                    ReportPath = $null
+                    Error = $errMsg
+                }
             }
         }
     }

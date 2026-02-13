@@ -1,9 +1,14 @@
 # Convert all Windows protocol specs to markdown, build a clean publish tree,
 # then force-push it to an orphaned 'publish' branch (e.g. for GitHub Pages).
+# Conversion runs in parallel (PowerShell 7) to reduce run time.
 name: Convert and publish
 
 on:
   workflow_dispatch:
+
+# Required for force-pushing to the orphaned 'publish' branch.
+permissions:
+  contents: write
 
 jobs:
   convert-and-publish:
@@ -20,24 +25,41 @@ jobs:
 
       - name: Import module and convert all specs
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: |
           Import-Module .\AwakeCoding.OpenSpecs -Force
           Get-OpenSpecCatalog |
             Save-OpenSpecDocument -Format DOCX -OutputPath ./downloads-convert -Force |
             Where-Object { $_.Status -in 'Downloaded', 'Exists' } |
-            Convert-OpenSpecToMarkdown -OutputPath ./converted-specs -Force
+            Convert-OpenSpecToMarkdown -OutputPath ./converted-specs -Force -Parallel -ThrottleLimit 4
 
       - name: Build publish directory and index
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: |
           Import-Module .\AwakeCoding.OpenSpecs -Force
-          .\scripts\Prepare-Publish.ps1 -ConvertedSpecsPath ./converted-specs -PublishPath ./publish
-          Update-OpenSpecIndex -Path ./publish
+          $converted = Join-Path $PWD 'converted-specs'
+          $publish = Join-Path $PWD 'publish'
+          New-Item -Path $publish -ItemType Directory -Force | Out-Null
+          Get-ChildItem -LiteralPath $converted -Directory | ForEach-Object {
+            $name = $_.Name
+            $md = Join-Path $_.FullName 'index.md'
+            if (-not (Test-Path -LiteralPath $md)) { return }
+            $dest = Join-Path $publish $name
+            New-Item -Path $dest -ItemType Directory -Force | Out-Null
+            Copy-Item -LiteralPath $md -Destination $dest -Force
+            $media = Join-Path $_.FullName 'media'
+            if (Test-Path -LiteralPath $media -PathType Container) {
+              Copy-Item -LiteralPath $media -Destination $dest -Recurse -Force
+            }
+          }
+          Update-OpenSpecIndex -Path $publish
 
       - name: Zip publish contents
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: |
-          Compress-Archive -Path ./publish/* -DestinationPath ./publish.zip -Force
+          Compress-Archive -Path .\publish\* -DestinationPath .\publish.zip -Force
 
       - name: Upload publish artifact
         uses: actions/upload-artifact@v4

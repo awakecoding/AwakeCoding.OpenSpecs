@@ -16,7 +16,6 @@ function Update-OpenSpecIndex {
         $specName = $dir.Name
         $mdFile = Join-Path -Path $dir.FullName -ChildPath "$specName.md"
 
-        # Fall back to index.md for specs not yet reconverted.
         if (-not (Test-Path -LiteralPath $mdFile)) {
             $mdFile = Join-Path -Path $dir.FullName -ChildPath 'index.md'
         }
@@ -32,11 +31,10 @@ function Update-OpenSpecIndex {
         #   Line 1: **[MS-RDPECLIP]:**
         #   Line 2: (blank)
         #   Line 3: **Remote Desktop Protocol: Clipboard Virtual Channel Extension**
-        $lines = Get-Content -LiteralPath $mdFile -TotalCount 5
+        $lines = Get-Content -LiteralPath $mdFile -TotalCount 5 -ErrorAction SilentlyContinue
         $title = ''
-        if ($lines.Count -ge 3) {
+        if ($lines -and $lines.Count -ge 3) {
             $rawTitle = $lines[2]
-            # Strip surrounding bold markers (**...**)
             $title = $rawTitle -replace '^\*\*(.+)\*\*$', '$1'
             $title = $title.Trim()
         }

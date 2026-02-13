@@ -35,7 +35,7 @@ These folders are tracked with `.gitkeep`, while their contents are ignored via 
 - `Save-OpenSpecDocument` - Downloads selected documents.
 - `Test-OpenSpecDownload` - End-to-end validation for a set of protocol IDs.
 - `Convert-OpenSpecToMarkdown` - Converts downloaded DOCX/PDF files to Markdown.
-- `Invoke-OpenSpecConversionPipeline` - Download + convert in one pipeline.
+- `Invoke-OpenSpecConversionPipeline` - Download + convert in one pipeline. Use `-Parallel -ThrottleLimit N` (PowerShell 7+) to run conversions in parallel and reduce CI time.
 - `Get-OpenSpecConversionReport` - Reads conversion report artifacts.
 - `Test-OpenSpecMarkdownFidelity` - Runs lightweight fidelity checks on generated Markdown.
 
