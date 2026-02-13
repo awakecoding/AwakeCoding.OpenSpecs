@@ -8,10 +8,13 @@ function ConvertFrom-OpenSpecDocx {
         [string]$OutputPath,
 
         [Parameter(Mandatory)]
-        [object]$Toolchain
+        [object]$Toolchain,
+
+        [Parameter()]
+        [string]$MediaOutputDirectory
     )
 
-    return ConvertFrom-OpenSpecDocxWithOpenXml -InputPath $InputPath -OutputPath $OutputPath -Toolchain $Toolchain
+    return ConvertFrom-OpenSpecDocxWithOpenXml -InputPath $InputPath -OutputPath $OutputPath -Toolchain $Toolchain -MediaOutputDirectory $MediaOutputDirectory
 }
 
 function ConvertFrom-OpenSpecDocxWithOpenXml {
@@ -24,7 +27,10 @@ function ConvertFrom-OpenSpecDocxWithOpenXml {
         [string]$OutputPath,
 
         [Parameter(Mandatory)]
-        [object]$Toolchain
+        [object]$Toolchain,
+
+        [Parameter()]
+        [string]$MediaOutputDirectory
     )
 
     if (-not (Test-Path -LiteralPath $InputPath)) {
@@ -73,6 +79,10 @@ function ConvertFrom-OpenSpecDocxWithOpenXml {
 
         $nsmgr = New-Object System.Xml.XmlNamespaceManager($document.NameTable)
         $nsmgr.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+        $nsmgr.AddNamespace('wp', 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing')
+        $nsmgr.AddNamespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main')
+        $nsmgr.AddNamespace('pic', 'http://schemas.openxmlformats.org/drawingml/2006/picture')
+        $nsmgr.AddNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
 
         $body = $document.SelectSingleNode('//w:body', $nsmgr)
         if ($null -eq $body) {
@@ -83,9 +93,15 @@ function ConvertFrom-OpenSpecDocxWithOpenXml {
         $lines = New-Object System.Collections.Generic.List[string]
         $emittedAnchors = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
+        # Resolve media output directory for image extraction.
+        $resolvedMediaDir = $null
+        if (-not [string]::IsNullOrWhiteSpace($MediaOutputDirectory)) {
+            $resolvedMediaDir = $MediaOutputDirectory
+        }
+
         foreach ($child in $body.ChildNodes) {
             if ($child.LocalName -eq 'p') {
-                $text = ConvertFrom-OpenSpecOpenXmlParagraph -ParagraphNode $child -NamespaceManager $nsmgr -RelationshipMap $relationshipMap
+                $text = ConvertFrom-OpenSpecOpenXmlParagraph -ParagraphNode $child -NamespaceManager $nsmgr -RelationshipMap $relationshipMap -Archive $archive -MediaOutputDirectory $resolvedMediaDir
                 $styleNode = $child.SelectSingleNode('./w:pPr/w:pStyle', $nsmgr)
                 $style = if ($styleNode -and $styleNode.Attributes) { $styleNode.GetAttribute('val', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main') } else { '' }
                 $anchors = Get-OpenSpecOpenXmlParagraphAnchors -ParagraphNode $child -NamespaceManager $nsmgr -ParagraphText $text -HeadingStyle $style
@@ -127,7 +143,7 @@ function ConvertFrom-OpenSpecDocxWithOpenXml {
                 }
             }
             elseif ($child.LocalName -eq 'tbl') {
-                $tableLines = ConvertFrom-OpenSpecOpenXmlTable -TableNode $child -NamespaceManager $nsmgr -RelationshipMap $relationshipMap
+                $tableLines = ConvertFrom-OpenSpecOpenXmlTable -TableNode $child -NamespaceManager $nsmgr -RelationshipMap $relationshipMap -Archive $archive -MediaOutputDirectory $resolvedMediaDir
                 foreach ($line in $tableLines) {
                     $lines.Add($line)
                 }
@@ -279,12 +295,18 @@ function ConvertFrom-OpenSpecOpenXmlParagraph {
         [System.Xml.XmlNamespaceManager]$NamespaceManager,
 
         [Parameter(Mandatory)]
-        [hashtable]$RelationshipMap
+        [hashtable]$RelationshipMap,
+
+        [Parameter()]
+        [System.IO.Compression.ZipArchive]$Archive,
+
+        [Parameter()]
+        [string]$MediaOutputDirectory
     )
 
     $segments = New-Object System.Collections.Generic.List[string]
     foreach ($child in $ParagraphNode.ChildNodes) {
-        $rendered = ConvertFrom-OpenSpecOpenXmlInlineNode -Node $child -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap
+        $rendered = ConvertFrom-OpenSpecOpenXmlInlineNode -Node $child -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap -Archive $Archive -MediaOutputDirectory $MediaOutputDirectory
         if (-not [string]::IsNullOrEmpty($rendered)) {
             $segments.Add($rendered)
         }
@@ -327,7 +349,13 @@ function ConvertFrom-OpenSpecOpenXmlInlineNode {
         [System.Xml.XmlNamespaceManager]$NamespaceManager,
 
         [Parameter(Mandatory)]
-        [hashtable]$RelationshipMap
+        [hashtable]$RelationshipMap,
+
+        [Parameter()]
+        [System.IO.Compression.ZipArchive]$Archive,
+
+        [Parameter()]
+        [string]$MediaOutputDirectory
     )
 
     if ($null -eq $Node) {
@@ -336,6 +364,15 @@ function ConvertFrom-OpenSpecOpenXmlInlineNode {
 
     switch ($Node.LocalName) {
         'r' {
+            # Check if this run contains a drawing (image) instead of text.
+            $drawingNode = $Node.SelectSingleNode('./w:drawing', $NamespaceManager)
+            if ($null -ne $drawingNode) {
+                $imageMarkdown = ConvertFrom-OpenSpecOpenXmlDrawing -DrawingNode $drawingNode -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap -Archive $Archive -MediaOutputDirectory $MediaOutputDirectory
+                if (-not [string]::IsNullOrWhiteSpace($imageMarkdown)) {
+                    return $imageMarkdown
+                }
+            }
+
             $text = ConvertFrom-OpenSpecOpenXmlRunText -RunNode $Node -NamespaceManager $NamespaceManager
             if (-not [string]::IsNullOrEmpty($text)) {
                 $rPr = $Node.SelectSingleNode('./w:rPr', $NamespaceManager)
@@ -409,7 +446,7 @@ function ConvertFrom-OpenSpecOpenXmlInlineNode {
         'hyperlink' {
             $linkTextParts = New-Object System.Collections.Generic.List[string]
             foreach ($inner in $Node.ChildNodes) {
-                $part = ConvertFrom-OpenSpecOpenXmlInlineNode -Node $inner -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap
+                $part = ConvertFrom-OpenSpecOpenXmlInlineNode -Node $inner -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap -Archive $Archive -MediaOutputDirectory $MediaOutputDirectory
                 if (-not [string]::IsNullOrEmpty($part)) {
                     $linkTextParts.Add($part)
                 }
@@ -439,11 +476,19 @@ function ConvertFrom-OpenSpecOpenXmlInlineNode {
         'bookmarkStart' {
             return ''
         }
+        'drawing' {
+            # Handle <w:drawing> that appears directly as a paragraph child (outside a run).
+            $imageMarkdown = ConvertFrom-OpenSpecOpenXmlDrawing -DrawingNode $Node -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap -Archive $Archive -MediaOutputDirectory $MediaOutputDirectory
+            if (-not [string]::IsNullOrWhiteSpace($imageMarkdown)) {
+                return $imageMarkdown
+            }
+            return ''
+        }
         default {
             if ($Node.ChildNodes -and $Node.ChildNodes.Count -gt 0) {
                 $parts = New-Object System.Collections.Generic.List[string]
                 foreach ($innerChild in $Node.ChildNodes) {
-                    $part = ConvertFrom-OpenSpecOpenXmlInlineNode -Node $innerChild -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap
+                    $part = ConvertFrom-OpenSpecOpenXmlInlineNode -Node $innerChild -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap -Archive $Archive -MediaOutputDirectory $MediaOutputDirectory
                     if (-not [string]::IsNullOrEmpty($part)) {
                         $parts.Add($part)
                     }
@@ -454,6 +499,153 @@ function ConvertFrom-OpenSpecOpenXmlInlineNode {
             return ''
         }
     }
+}
+
+function ConvertFrom-OpenSpecOpenXmlDrawing {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Xml.XmlNode]$DrawingNode,
+
+        [Parameter(Mandatory)]
+        [System.Xml.XmlNamespaceManager]$NamespaceManager,
+
+        [Parameter(Mandatory)]
+        [hashtable]$RelationshipMap,
+
+        [Parameter()]
+        [System.IO.Compression.ZipArchive]$Archive,
+
+        [Parameter()]
+        [string]$MediaOutputDirectory
+    )
+
+    # Navigate to the <a:blip> element that contains the image relationship ID.
+    # Structure: <w:drawing> → <wp:inline|wp:anchor> → <a:graphic> → <a:graphicData> → <pic:pic> → <pic:blipFill> → <a:blip r:embed="rIdN"/>
+    $blipNode = $DrawingNode.SelectSingleNode('.//a:blip', $NamespaceManager)
+    if ($null -eq $blipNode) {
+        return $null
+    }
+
+    $embedId = $blipNode.GetAttribute('embed', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+    if ([string]::IsNullOrWhiteSpace($embedId)) {
+        return $null
+    }
+
+    if (-not $RelationshipMap.ContainsKey($embedId)) {
+        return $null
+    }
+
+    $rel = $RelationshipMap[$embedId]
+    $imageArchivePath = $rel.Target  # e.g., "word/media/image1.png"
+
+    # Extract alt text from <wp:docPr descr="..."> or <pic:cNvPr descr="...">.
+    $altText = ''
+    $docPrNode = $DrawingNode.SelectSingleNode('.//wp:docPr', $NamespaceManager)
+    if ($null -ne $docPrNode) {
+        $descr = $docPrNode.GetAttribute('descr')
+        if (-not [string]::IsNullOrWhiteSpace($descr)) {
+            $altText = $descr
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($docPrNode.GetAttribute('title'))) {
+            $altText = $docPrNode.GetAttribute('title')
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($altText)) {
+        $cNvPrNode = $DrawingNode.SelectSingleNode('.//pic:cNvPr', $NamespaceManager)
+        if ($null -ne $cNvPrNode) {
+            $descr = $cNvPrNode.GetAttribute('descr')
+            if (-not [string]::IsNullOrWhiteSpace($descr)) {
+                $altText = $descr
+            }
+        }
+    }
+
+    # Extract the image file from the DOCX archive.
+    $imageFilename = [System.IO.Path]::GetFileName($imageArchivePath)
+    if ([string]::IsNullOrWhiteSpace($altText)) {
+        $altText = [System.IO.Path]::GetFileNameWithoutExtension($imageFilename)
+    }
+
+    if ($null -eq $Archive -or [string]::IsNullOrWhiteSpace($MediaOutputDirectory)) {
+        # No archive/output directory — emit placeholder.
+        return "![${altText}](media/${imageFilename})"
+    }
+
+    $imageEntry = $Archive.GetEntry($imageArchivePath)
+    if ($null -eq $imageEntry) {
+        # Try without the word/ prefix.
+        $fallbackPath = $imageArchivePath -replace '^word/', ''
+        $imageEntry = $Archive.GetEntry("word/$fallbackPath")
+        if ($null -eq $imageEntry) {
+            return "![${altText}](media/${imageFilename})"
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $MediaOutputDirectory)) {
+        [void](New-Item -Path $MediaOutputDirectory -ItemType Directory -Force)
+    }
+
+    # Extract the image to a temporary buffer to detect its actual format,
+    # then save with the correct file extension.
+    $sourceStream = $imageEntry.Open()
+    try {
+        $memStream = New-Object System.IO.MemoryStream
+        try {
+            $sourceStream.CopyTo($memStream)
+            [void]$memStream.Seek(0, [System.IO.SeekOrigin]::Begin)
+
+            # Detect actual image format from magic bytes.
+            $header = New-Object byte[] 8
+            $bytesRead = $memStream.Read($header, 0, 8)
+            [void]$memStream.Seek(0, [System.IO.SeekOrigin]::Begin)
+
+            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($imageFilename)
+            $detectedExt = $null
+            if ($bytesRead -ge 8 -and $header[0] -eq 0x89 -and $header[1] -eq 0x50 -and $header[2] -eq 0x4E -and $header[3] -eq 0x47) {
+                $detectedExt = '.png'
+            }
+            elseif ($bytesRead -ge 3 -and $header[0] -eq 0xFF -and $header[1] -eq 0xD8 -and $header[2] -eq 0xFF) {
+                $detectedExt = '.jpg'
+            }
+            elseif ($bytesRead -ge 3 -and $header[0] -eq 0x47 -and $header[1] -eq 0x49 -and $header[2] -eq 0x46) {
+                $detectedExt = '.gif'
+            }
+            elseif ($bytesRead -ge 4 -and $header[0] -eq 0x52 -and $header[1] -eq 0x49 -and $header[2] -eq 0x46 -and $header[3] -eq 0x46) {
+                $detectedExt = '.webp'
+            }
+            elseif ($bytesRead -ge 4 -and $header[0] -eq 0x01 -and $header[1] -eq 0x00 -and $header[2] -eq 0x00 -and $header[3] -eq 0x00) {
+                $detectedExt = '.emf'
+            }
+            elseif ($bytesRead -ge 4 -and $header[0] -eq 0xD7 -and $header[1] -eq 0xCD -and $header[2] -eq 0xC6 -and $header[3] -eq 0x9A) {
+                $detectedExt = '.wmf'
+            }
+
+            if ($null -ne $detectedExt) {
+                $imageFilename = "${baseName}${detectedExt}"
+            }
+
+            $outputFilePath = Join-Path -Path $MediaOutputDirectory -ChildPath $imageFilename
+            if (-not (Test-Path -LiteralPath $outputFilePath)) {
+                $destStream = [System.IO.File]::Create($outputFilePath)
+                try {
+                    $memStream.CopyTo($destStream)
+                }
+                finally {
+                    $destStream.Dispose()
+                }
+            }
+        }
+        finally {
+            $memStream.Dispose()
+        }
+    }
+    finally {
+        $sourceStream.Dispose()
+    }
+
+    return "![${altText}](media/${imageFilename})"
 }
 
 function ConvertFrom-OpenSpecOpenXmlRunText {
@@ -663,7 +855,13 @@ function ConvertFrom-OpenSpecOpenXmlTable {
         [System.Xml.XmlNamespaceManager]$NamespaceManager,
 
         [Parameter()]
-        [hashtable]$RelationshipMap = @{}
+        [hashtable]$RelationshipMap = @{},
+
+        [Parameter()]
+        [System.IO.Compression.ZipArchive]$Archive,
+
+        [Parameter()]
+        [string]$MediaOutputDirectory
     )
 
     $rows = New-Object System.Collections.Generic.List[object]
@@ -680,7 +878,7 @@ function ConvertFrom-OpenSpecOpenXmlTable {
             if ($null -ne $paragraphNodes -and $paragraphNodes.Count -gt 0) {
                 $cellParts = New-Object System.Collections.Generic.List[string]
                 foreach ($pNode in $paragraphNodes) {
-                    $pText = ConvertFrom-OpenSpecOpenXmlParagraph -ParagraphNode $pNode -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap
+                    $pText = ConvertFrom-OpenSpecOpenXmlParagraph -ParagraphNode $pNode -NamespaceManager $NamespaceManager -RelationshipMap $RelationshipMap -Archive $Archive -MediaOutputDirectory $MediaOutputDirectory
                     if (-not [string]::IsNullOrWhiteSpace($pText)) {
                         $cellParts.Add($pText)
                     }
