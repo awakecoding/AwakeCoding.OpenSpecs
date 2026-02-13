@@ -12,6 +12,7 @@ function Get-OpenSpecCatalog {
         '(?is)<a\b[^>]*href\s*=\s*["''](?<href>\.\./(?<slug>(?:ms|mc)-[a-z0-9-]+)/(?<guid>[0-9a-f-]{36}))(?:["''][^>]*)?>(?<text>.*?)</a>'
     )
     $idRegex = [regex]::new('\[(?<id>(?:MS|MC)-[A-Z0-9-]+)\]', 'IgnoreCase')
+    $cellRegex = [regex]::new('(?is)<td[^>]*>(?<content>.*?)</td>')
 
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $entries = New-Object System.Collections.Generic.List[object]
@@ -41,10 +42,17 @@ function Get-OpenSpecCatalog {
             $title = $protocolId
         }
 
+        $description = ''
+        $cells = [regex]::Matches($rowHtml, $cellRegex)
+        if ($cells.Count -ge 2) {
+            $description = (ConvertFrom-OpenSpecHtml -Html $cells[1].Groups['content'].Value).Trim()
+        }
+
         $entries.Add([pscustomobject]@{
             PSTypeName = 'AwakeCoding.OpenSpecs.Entry'
             ProtocolId = $protocolId
             Title = $title
+            Description = $description
             SpecPageUrl = $specPageUrl
             Slug = $slug
             SourcePage = $Uri
@@ -63,6 +71,7 @@ function Get-OpenSpecCatalog {
                 PSTypeName = 'AwakeCoding.OpenSpecs.Entry'
                 ProtocolId = $protocolId
                 Title = $protocolId
+                Description = ''
                 SpecPageUrl = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/$($protocolId.ToLowerInvariant())"
                 Slug = $protocolId.ToLowerInvariant()
                 SourcePage = $Uri
