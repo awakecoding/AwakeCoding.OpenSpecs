@@ -18,7 +18,8 @@
         'Convert-OpenSpecToMarkdown',
         'Invoke-OpenSpecConversionPipeline',
         'Get-OpenSpecConversionReport',
-        'Test-OpenSpecMarkdownFidelity'
+        'Test-OpenSpecMarkdownFidelity',
+        'Update-OpenSpecIndex'
     )
     CmdletsToExport = @()
     VariablesToExport = @()
