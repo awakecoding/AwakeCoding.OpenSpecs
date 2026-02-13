@@ -1,0 +1,60 @@
+# Convert all Windows protocol specs to markdown, build a clean publish tree,
+# then force-push it to an orphaned 'publish' branch (e.g. for GitHub Pages).
+name: Convert and publish
+
+on:
+  workflow_dispatch:
+
+jobs:
+  convert-and-publish:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install OpenXML module
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name OpenXML -Force -Scope CurrentUser
+
+      - name: Import module and convert all specs
+        shell: pwsh
+        run: |
+          Import-Module .\AwakeCoding.OpenSpecs -Force
+          Get-OpenSpecCatalog |
+            Save-OpenSpecDocument -Format DOCX -OutputPath ./downloads-convert -Force |
+            Where-Object { $_.Status -in 'Downloaded', 'Exists' } |
+            Convert-OpenSpecToMarkdown -OutputPath ./converted-specs -Force
+
+      - name: Build publish directory and index
+        shell: pwsh
+        run: |
+          Import-Module .\AwakeCoding.OpenSpecs -Force
+          .\scripts\Prepare-Publish.ps1 -ConvertedSpecsPath ./converted-specs -PublishPath ./publish
+          Update-OpenSpecIndex -Path ./publish
+
+      - name: Zip publish contents
+        shell: pwsh
+        run: |
+          Compress-Archive -Path ./publish/* -DestinationPath ./publish.zip -Force
+
+      - name: Upload publish artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish
+          path: publish.zip
+
+      - name: Push to orphaned publish branch
+        shell: pwsh
+        working-directory: publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $RemoteRepo = "https://${Env:GITHUB_ACTOR}:${Env:GITHUB_TOKEN}@github.com/${Env:GITHUB_REPOSITORY}.git"
+          git init
+          git config user.name "GitHub Actions"
+          git config user.email "github-actions-bot@users.noreply.github.com"
+          git add .
+          git commit -m "Publish converted Open Specs markdown (${Env:GITHUB_REPOSITORY})"
+          git push --force "${RemoteRepo}" "HEAD:publish"
