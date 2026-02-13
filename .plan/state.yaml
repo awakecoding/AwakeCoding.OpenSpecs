@@ -15,18 +15,18 @@ phases:
 
   - id: 2
     name: "Fix TOC & Anchor Links"
-    status: in_progress
+    status: completed
     started_at: "2026-02-12T21:16:00Z"
-    completed_at: null
+    completed_at: "2026-02-12T21:35:00Z"
     tasks_total: 4
-    tasks_completed: 3
+    tasks_completed: 4
     blocked: false
     blocker_reason: null
 
   - id: 3
     name: "Validate Against Live HTML"
-    status: pending
-    started_at: null
+    status: in_progress
+    started_at: "2026-02-12T21:35:00Z"
     completed_at: null
     tasks_total: 2
     tasks_completed: 0
@@ -53,9 +53,9 @@ phases:
     blocked: false
     blocker_reason: null
 
-current_phase: 2
+current_phase: 3
 tasks_total: 12
-tasks_completed: 5
+tasks_completed: 6
 tasks_in_progress: 0
 tasks_blocked: 0
 last_updated: "2026-02-12T21:25:00Z"
