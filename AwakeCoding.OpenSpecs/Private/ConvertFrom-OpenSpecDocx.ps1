@@ -539,6 +539,25 @@ function Add-OpenSpecSectionAnchorsFromToc {
     # (which now use Section_X.Y) and were only kept for positioning above.
     $result = [regex]::Replace($result, '(?m)^\s*<a id="_Toc\d+"></a>\s*\r?\n?', '')
 
+    # Prepend section numbers to heading lines that follow a Section_X.Y anchor.
+    # Word uses auto-numbering for headings, so the section number isn't in the
+    # paragraph text. The TOC tells us the number; inject it into the heading.
+    $result = [regex]::Replace(
+        $result,
+        '(?m)^(?<anchor><a id="Section_(?<num>\d+(?:\.\d+)*)"></a>\r?\n)(?<hashes>#{1,6}) (?<title>.+)$',
+        {
+            param($m)
+            $num = $m.Groups['num'].Value
+            $hashes = $m.Groups['hashes'].Value
+            $title = $m.Groups['title'].Value
+            # Only prepend if the title doesn't already start with the section number.
+            if ($title -match "^$([regex]::Escape($num))[\.\s]") {
+                return $m.Value
+            }
+            "$($m.Groups['anchor'].Value)$hashes $num $title"
+        }
+    )
+
     return $result
 }
 
