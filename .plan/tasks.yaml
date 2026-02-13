@@ -91,10 +91,10 @@ tasks:
     dependencies:
       - TASK-003
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "Filter _Toc bookmarks in Get-OpenSpecOpenXmlParagraphAnchors"
+    status: completed
+    started_at: "2026-02-12T21:25:00Z"
+    completed_at: "2026-02-12T21:32:00Z"
+    notes: "Kept _Toc bookmarks in initial output for positioning, then strip with regex after Section_X.Y anchors inserted. Approach: emit _Toc → use for placement → remove."
     files_affected:
       - "AwakeCoding.OpenSpecs/Private/ConvertFrom-OpenSpecDocx.ps1"
     estimated_hours: 0.5

@@ -535,6 +535,10 @@ function Add-OpenSpecSectionAnchorsFromToc {
         $result = $result.Substring(0, $anchorMatch.Index) + $replacement + $result.Substring($anchorMatch.Index + $anchorMatch.Length)
     }
 
+    # Remove _Toc anchor tags — they are no longer referenced by TOC links
+    # (which now use Section_X.Y) and were only kept for positioning above.
+    $result = [regex]::Replace($result, '(?m)^\s*<a id="_Toc\d+"></a>\s*\r?\n?', '')
+
     return $result
 }
 
