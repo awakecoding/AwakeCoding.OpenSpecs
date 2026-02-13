@@ -38,8 +38,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           Import-Module .\AwakeCoding.OpenSpecs -Force
-          & (Join-Path $PWD 'scripts' 'Prepare-Publish.ps1') -ConvertedSpecsPath (Join-Path $PWD 'converted-specs') -PublishPath (Join-Path $PWD 'publish')
-          Update-OpenSpecIndex -Path (Join-Path $PWD 'publish')
+          $converted = Join-Path $PWD 'converted-specs'
+          $publish = Join-Path $PWD 'publish'
+          New-Item -Path $publish -ItemType Directory -Force | Out-Null
+          Get-ChildItem -LiteralPath $converted -Directory | ForEach-Object {
+            $name = $_.Name
+            $md = Join-Path $_.FullName 'index.md'
+            if (-not (Test-Path -LiteralPath $md)) { return }
+            $dest = Join-Path $publish $name
+            New-Item -Path $dest -ItemType Directory -Force | Out-Null
+            Copy-Item -LiteralPath $md -Destination $dest -Force
+            $media = Join-Path $_.FullName 'media'
+            if (Test-Path -LiteralPath $media -PathType Container) {
+              Copy-Item -LiteralPath $media -Destination $dest -Recurse -Force
+            }
+          }
+          Update-OpenSpecIndex -Path $publish
 
       - name: Zip publish contents
         shell: pwsh
