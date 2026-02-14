@@ -19,7 +19,8 @@
         'Invoke-OpenSpecConversionPipeline',
         'Get-OpenSpecConversionReport',
         'Test-OpenSpecMarkdownFidelity',
-        'Update-OpenSpecIndex'
+        'Update-OpenSpecIndex',
+        'Compare-OpenSpecToLiveHtml'
     )
     CmdletsToExport = @()
     VariablesToExport = @()
