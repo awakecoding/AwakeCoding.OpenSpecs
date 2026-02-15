@@ -15,7 +15,9 @@ Describe 'AwakeCoding.OpenSpecs module load' {
             'Convert-OpenSpecToMarkdown',
             'Invoke-OpenSpecConversionPipeline',
             'Get-OpenSpecConversionReport',
-            'Test-OpenSpecMarkdownFidelity'
+            'Test-OpenSpecMarkdownFidelity',
+            'Update-OpenSpecIndex',
+            'Compare-OpenSpecToLiveHtml'
         )
 
         foreach ($name in $expected) {

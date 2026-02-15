@@ -9,12 +9,12 @@ PowerShell module to discover and download Microsoft Open Specifications Windows
 - Extracts per-spec PDF and DOCX links from each spec page
 - Supports filtering by protocol ID and title (contains by default)
 
-## Module Layout
+## Project layout
 
-- `AwakeCoding.OpenSpecs/AwakeCoding.OpenSpecs.psd1`
-- `AwakeCoding.OpenSpecs/AwakeCoding.OpenSpecs.psm1`
-- `AwakeCoding.OpenSpecs/Public/*.ps1`
-- `AwakeCoding.OpenSpecs/Private/*.ps1`
+- `AwakeCoding.OpenSpecs/` – PowerShell module (`AwakeCoding.OpenSpecs.psd1`, `AwakeCoding.OpenSpecs.psm1`, `Public/*.ps1`, `Private/*.ps1`)
+- `tests/AwakeCoding.OpenSpecs.Tests.ps1` – Pester tests (module load, live discovery, conversion report aggregation). Run with `Invoke-Pester ./tests`; use `-Tag '!Live'` to skip network tests.
+- `scripts/` – Helper scripts (e.g. `Test-ParallelConversion.ps1`, `Build-Publish.ps1`, `Analyze-ConversionQuality.ps1`)
+- `.github/workflows/convert-and-publish.yml` – Workflow to convert all specs and push a publish tree to an orphaned branch (e.g. for GitHub Pages).
 
 ## Recommended Working Directories
 
@@ -28,16 +28,18 @@ These folders are tracked with `.gitkeep`, while their contents are ignored via 
 
 ## Cmdlets
 
-- `Get-OpenSpecCatalog` - Gets Windows Protocol technical document entries.
-- `Find-OpenSpec` - Filters entries by query or protocol ID.
+- `Get-OpenSpecCatalog` - Gets Windows Protocol technical document entries from the Learn catalog page.
+- `Find-OpenSpec` - Filters catalog entries by query or protocol ID.
 - `Get-OpenSpecVersion` - Resolves latest (or all) version rows for a spec page.
 - `Get-OpenSpecDownloadLink` - Gets download URLs for PDF and/or DOCX.
-- `Save-OpenSpecDocument` - Downloads selected documents.
+- `Save-OpenSpecDocument` - Downloads selected documents (accepts pipeline from `Get-OpenSpecCatalog` or `Get-OpenSpecDownloadLink`).
 - `Test-OpenSpecDownload` - End-to-end validation for a set of protocol IDs.
-- `Convert-OpenSpecToMarkdown` - Converts downloaded DOCX/PDF files to Markdown.
-- `Invoke-OpenSpecConversionPipeline` - Download + convert in one pipeline. Use `-Parallel -ThrottleLimit N` (PowerShell 7+) to run conversions in parallel and reduce CI time.
-- `Get-OpenSpecConversionReport` - Reads conversion report artifacts.
-- `Test-OpenSpecMarkdownFidelity` - Runs lightweight fidelity checks on generated Markdown.
+- `Convert-OpenSpecToMarkdown` - Converts downloaded DOCX/PDF files to Markdown (supports `-Parallel -ThrottleLimit N` on PowerShell 7+).
+- `Invoke-OpenSpecConversionPipeline` - Download + convert in one step; use `-Parallel -ThrottleLimit N` to run conversions in parallel.
+- `Get-OpenSpecConversionReport` - Reads conversion report artifacts from a converted-specs output tree.
+- `Test-OpenSpecMarkdownFidelity` - Runs lightweight fidelity checks on generated Markdown (headings, tables, anchors, TOC links).
+- `Update-OpenSpecIndex` - Generates a `README.md` index of all converted specs in a directory (optionally using catalog titles and descriptions).
+- `Compare-OpenSpecToLiveHtml` - Compares converted markdown structure to the live spec page on learn.microsoft.com and reports missing sections or ID mismatches.
 
 ## Usage
 
@@ -74,16 +76,19 @@ Invoke-OpenSpecConversionPipeline -ProtocolId MS-RDPEWA,MS-RDPBCGR -Format DOCX 
 Get-OpenSpecConversionReport -OutputPath $ConvertedPath
 Test-OpenSpecMarkdownFidelity -OutputPath $ConvertedPath
 
+# Generate an index README for the converted specs (e.g. for publish branch)
+Update-OpenSpecIndex -Path $ConvertedPath -UseCatalogTitles
+Update-OpenSpecIndex -Path $ConvertedPath -UseCatalogTitles -IncludeDescription
+
+# Compare converted markdown structure to live Learn pages
+Compare-OpenSpecToLiveHtml -OutputPath $ConvertedPath -ProtocolId MS-RDPEWA,MS-RDPBCGR
+
 # Optional: write your own run summaries under $ReportPath
 ```
 
 ## Notes
 
-- Latest published version is selected by default.
-- `-IncludePrevious` and `-AllVersions` can include older version rows.
-- Output filename preserves the source filename from the download URL.
-- The module uses retry/backoff for transient HTTP errors.
-- Conversion defaults to textual packet/structure output (Markdown tables with ASCII fallback), never image-based diagram rendering.
-- DOCX conversion uses OpenXML-based conversion.
-- Migration note: `Convert-OpenSpecToMarkdown` no longer supports `-DocxStrategy`; remove that argument from existing scripts.
-- PDF conversion prefers `docling` or `markitdown`.
+- Latest published version is selected by default; `-IncludePrevious` and `-AllVersions` can include older version rows.
+- Output filenames follow the source download URL; the module uses retry/backoff for transient HTTP errors.
+- DOCX conversion is OpenXML-based; PDF conversion uses `docling` or `markitdown` when available. Conversion output is textual (Markdown tables, ASCII fallback), not image-based.
+- For CI or bulk runs, use `Invoke-OpenSpecConversionPipeline` or pipe `Get-OpenSpecCatalog` into `Save-OpenSpecDocument` then `Convert-OpenSpecToMarkdown` with `-Parallel -ThrottleLimit N` (PowerShell 7+).
