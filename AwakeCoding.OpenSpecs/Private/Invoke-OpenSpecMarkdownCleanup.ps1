@@ -1553,6 +1553,13 @@ function Repair-OpenSpecSectionGuidLinksByHeadingMatch {
     $newLine = [Environment]::NewLine
     $lineArray = $Markdown -split '\r?\n'
     $titleToSection = @{}
+    $anchorIdRegex = [regex]::new('<a\s+id="([^"]+)"\s*></a>', 'IgnoreCase')
+
+    # Collect all existing anchors
+    $existingAnchors = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($m in $anchorIdRegex.Matches($Markdown)) {
+        [void]$existingAnchors.Add($m.Groups[1].Value)
+    }
 
     if ($SectionToTitleMap) {
         foreach ($entry in $SectionToTitleMap.GetEnumerator()) {
@@ -1567,34 +1574,64 @@ function Repair-OpenSpecSectionGuidLinksByHeadingMatch {
         }
     }
 
+    # From lines with existing Section_N.N anchors + following line (heading or plain title)
     for ($i = 0; $i -lt $lineArray.Count; $i++) {
         $line = $lineArray[$i]
         if ($line -match '^\s*<a\s+id="(Section_\d+(?:\.\d+)*)"\s*></a>\s*$') {
             $sectionId = $Matches[1]
-            $sectionNum = $sectionId -replace '^Section_', ''
-            $nextLine = if ($i + 1 -lt $lineArray.Count) { $lineArray[$i + 1] } else { '' }
-            if ($nextLine -match '^\s*#{1,6}\s+(?<title>.+)$') {
-                $title = $Matches['title'].Trim()
-                $norm = ($title -replace '\s+', ' ').Trim()
-                if (-not $titleToSection.ContainsKey($norm)) { $titleToSection[$norm] = $sectionId }
-                $withoutNum = $title -replace '^\d+(?:\.\d+)*\s+', ''
-                $normWithout = ($withoutNum -replace '\s+', ' ').Trim()
-                if ($normWithout -and -not $titleToSection.ContainsKey($normWithout)) { $titleToSection[$normWithout] = $sectionId }
-            }
+            $nextLine = if ($i + 1 -lt $lineArray.Count) { $lineArray[$i + 1].Trim() } else { '' }
+            if ([string]::IsNullOrWhiteSpace($nextLine)) { continue }
+            $title = if ($nextLine -match '^\s*#{1,6}\s+(?<title>.+)$') { $Matches['title'].Trim() } else { $nextLine }
+            $norm = ($title -replace '\s+', ' ').Trim()
+            if (-not $titleToSection.ContainsKey($norm)) { $titleToSection[$norm] = $sectionId }
+            $withoutNum = $title -replace '^\d+(?:\.\d+)*\s+', ''
+            $normWithout = ($withoutNum -replace '\s+', ' ').Trim()
+            if ($normWithout -and -not $titleToSection.ContainsKey($normWithout)) { $titleToSection[$normWithout] = $sectionId }
+            $withoutParen = $title -replace '\s*\([^)]*\)\s*$', ''  # "Share Control Header (TS_SHARECONTROLHEADER)" -> "Share Control Header"
+            $normNoParen = ($withoutParen -replace '\s+', ' ').Trim()
+            if ($normNoParen -and -not $titleToSection.ContainsKey($normNoParen)) { $titleToSection[$normNoParen] = $sectionId }
         }
     }
 
-    # Find best section for link text: exact match, or heading starts with link text (e.g. "Set Error Info PDU" -> "Set Error Info PDU Data (TS_...)").
+    # From ALL headings that start with section number (e.g. ## 2.2.8.1.1.1 Share Control Header)
+    $headingNumRegex = [regex]::new('^\s*#{1,6}\s+(\d+(?:\.\d+)*)\s+(?<title>.+)$')
+    for ($i = 0; $i -lt $lineArray.Count; $i++) {
+        $line = $lineArray[$i]
+        $hm = $headingNumRegex.Match($line)
+        if ($hm.Success) {
+            $sectionNum = $hm.Groups[1].Value
+            $sectionId = "Section_$sectionNum"
+            $title = $hm.Groups['title'].Value.Trim()
+            $norm = ($title -replace '\s+', ' ').Trim()
+            if (-not $titleToSection.ContainsKey($norm)) { $titleToSection[$norm] = $sectionId }
+            $withoutNum = ($title -replace '^\d+(?:\.\d+)*\s+', '') -replace '\s*\([^)]*\)\s*$', ''
+            $normWithout = ($withoutNum -replace '\s+', ' ').Trim()
+            if ($normWithout -and -not $titleToSection.ContainsKey($normWithout)) { $titleToSection[$normWithout] = $sectionId }
+        }
+    }
+
+    # Find best section for link text: exact match, prefix match, or extract "(section N.N.N)" from link text.
     $findSectionForLinkText = {
-        param($norm, $titleToSection)
+        param($norm, $titleToSection, $existingAnchors)
         if ($titleToSection.ContainsKey($norm)) { return $titleToSection[$norm] }
+        # Extract section number from link text like "Share Control Header (section 2.2.8.1.1.1)"
+        if ($norm -match '\(section\s+(\d+(?:\.\d+)*)\)') {
+            $extractedId = "Section_$($Matches[1])"
+            if ($existingAnchors.Contains($extractedId)) { return $extractedId }
+        }
         $candidates = @()
         foreach ($key in $titleToSection.Keys) {
             if ($key -eq $norm) { return $titleToSection[$key] }
-            if ($key.StartsWith($norm + ' ') -or $key.StartsWith($norm + '(')) { $candidates += $titleToSection[$key] }
-            elseif ($norm.StartsWith($key + ' ') -or $norm.StartsWith($key + '(')) { $candidates += $titleToSection[$key] }
+            if ($key.StartsWith($norm + ' ') -or $key.StartsWith($norm + '(')) { $candidates += [pscustomobject]@{ Key = $key; SectionId = $titleToSection[$key] } }
+            elseif ($norm.StartsWith($key + ' ') -or $norm.StartsWith($key + '(')) { $candidates += [pscustomobject]@{ Key = $key; SectionId = $titleToSection[$key] } }
+            elseif ($key.StartsWith($norm) -or $norm.StartsWith($key)) { $candidates += [pscustomobject]@{ Key = $key; SectionId = $titleToSection[$key] } }
         }
-        if ($candidates.Count -eq 1) { return $candidates[0] }
+        if ($candidates.Count -eq 1) { return $candidates[0].SectionId }
+        if ($candidates.Count -gt 1) {
+            # Prefer shortest key (most specific match), e.g. "Status Info PDU" over "Status Info PDU Data (TS_...)"
+            $best = $candidates | Sort-Object -Property { $_.Key.Length } | Select-Object -First 1
+            return $best.SectionId
+        }
         return $null
     }
     $guidLinkRegex = [regex]::new('\[(?<text>[^\]]+)\]\(#Section_[a-fA-F0-9]{32}\)')
@@ -1602,15 +1639,15 @@ function Repair-OpenSpecSectionGuidLinksByHeadingMatch {
         param($m)
         $rawText = $m.Groups['text'].Value
         $norm = ($rawText -replace '\*+', '' -replace '\s+', ' ').Trim()
-        $sectionId = & $findSectionForLinkText $norm $titleToSection
-        if (-not $sectionId -and $rawText.Trim() -ne $norm) { $sectionId = & $findSectionForLinkText $rawText.Trim() $titleToSection }
+        $sectionId = & $findSectionForLinkText $norm $titleToSection $existingAnchors
+        if (-not $sectionId -and $rawText.Trim() -ne $norm) { $sectionId = & $findSectionForLinkText $rawText.Trim() $titleToSection $existingAnchors }
         if ($sectionId) { "[$rawText](#$sectionId)" } else { $m.Value }
     })
     $linksRepaired = 0
     foreach ($m in $guidLinkRegex.Matches($Markdown)) {
         $norm = ($m.Groups['text'].Value -replace '\*+', '' -replace '\s+', ' ').Trim()
-        $sid = & $findSectionForLinkText $norm $titleToSection
-        if (-not $sid) { $sid = & $findSectionForLinkText $m.Groups['text'].Value.Trim() $titleToSection }
+        $sid = & $findSectionForLinkText $norm $titleToSection $existingAnchors
+        if (-not $sid) { $sid = & $findSectionForLinkText $m.Groups['text'].Value.Trim() $titleToSection $existingAnchors }
         if ($sid) { $linksRepaired++ }
     }
 

@@ -33,6 +33,11 @@ jobs:
             Where-Object { $_.Status -in 'Downloaded', 'Exists' } |
             Convert-OpenSpecToMarkdown -OutputPath ./converted-specs -Force -Parallel -ThrottleLimit 4
 
+      - name: Repair broken links (post-conversion pass)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: .\scripts\Repair-AllBrokenLinks.ps1 -Path ./converted-specs
+
       - name: Build publish directory and index
         shell: pwsh
         working-directory: ${{ github.workspace }}
