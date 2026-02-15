@@ -35,6 +35,16 @@ function Invoke-OpenSpecMarkdownCleanup {
         })
     }
 
+    $frontMatterResult = Remove-OpenSpecFrontMatterBoilerplate -Markdown $result
+    $result = $frontMatterResult.Markdown
+    if ($frontMatterResult.Removed) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'FrontMatterBoilerplateRemoved'
+            Severity = 'Info'
+            Reason = 'IP notice, revision history, and support boilerplate were removed after the title; last updated date retained when present.'
+        })
+    }
+
     $tableResult = ConvertFrom-OpenSpecHtmlTables -Markdown $result
     $result = $tableResult.Markdown
     foreach ($issue in $tableResult.Issues) { [void]$issues.Add($issue) }
@@ -63,6 +73,10 @@ function Invoke-OpenSpecMarkdownCleanup {
     $result = $crossSpecResult.Markdown
     foreach ($issue in $crossSpecResult.Issues) { [void]$issues.Add($issue) }
 
+    $sectionNumResult = Repair-OpenSpecSectionNumberLinks -Markdown $result
+    $result = $sectionNumResult.Markdown
+    foreach ($issue in $sectionNumResult.Issues) { [void]$issues.Add($issue) }
+
     $mathResult = ConvertTo-OpenSpecNormalizedMathText -Markdown $result
     $result = $mathResult.Markdown
     foreach ($issue in $mathResult.Issues) { [void]$issues.Add($issue) }
@@ -81,6 +95,28 @@ function Invoke-OpenSpecMarkdownCleanup {
         })
     }
 
+    $tocAnchorResult = Add-OpenSpecMissingSectionAnchorsFromToc -Markdown $result
+    $result = $tocAnchorResult.Markdown
+    if ($tocAnchorResult.InjectedCount -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'MissingSectionAnchorsFromToc'
+            Severity = 'Info'
+            Count = $tocAnchorResult.InjectedCount
+            Reason = 'Missing section anchors were injected using TOC titles so linked section numbers resolve.'
+        })
+    }
+
+    $guidByHeadingResult = Repair-OpenSpecSectionGuidLinksByHeadingMatch -Markdown $result
+    $result = $guidByHeadingResult.Markdown
+    if ($guidByHeadingResult.LinksRepaired -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'SectionGuidLinksRepairedByHeading'
+            Severity = 'Info'
+            Count = $guidByHeadingResult.LinksRepaired
+            Reason = 'Section GUID links were rewritten to section numbers by matching link text to headings.'
+        })
+    }
+
     $glossaryResult = Add-OpenSpecGlossaryAnchorsAndRepairLinks -Markdown $result
     $result = $glossaryResult.Markdown
     if ($glossaryResult.AnchorsInjected -gt 0 -or $glossaryResult.LinksRepaired -gt 0) {
@@ -90,6 +126,16 @@ function Invoke-OpenSpecMarkdownCleanup {
             AnchorsInjected = $glossaryResult.AnchorsInjected
             LinksRepaired = $glossaryResult.LinksRepaired
             Reason = 'Glossary term anchors were added and #gt_ links were rewritten so they resolve.'
+        })
+    }
+
+    $tocGitHubResult = ConvertTo-OpenSpecGitHubFriendlyToc -Markdown $result
+    $result = $tocGitHubResult.Markdown
+    if ($tocGitHubResult.Rewritten) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'TocGitHubFriendly'
+            Severity = 'Info'
+            Reason = 'Table of contents was rewritten as collapsible sections for better GitHub rendering.'
         })
     }
 
@@ -791,6 +837,97 @@ function ConvertTo-OpenSpecNormalizedTocLinks {
     }
 }
 
+function ConvertTo-OpenSpecGitHubFriendlyToc {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $newLine = [Environment]::NewLine
+    $tocLineRegex = [regex]::new('^\s*\[(?<num>\d+(?:\.\d+)*)\s+(?<title>[^\]]*)\]\(#Section_(?<sec>\d+(?:\.\d+)*)\)\s*$')
+    $lines = $Markdown -split '\r?\n'
+    $tocTitleIndex = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].Trim() -ceq 'Table of Contents') {
+            $tocTitleIndex = $i
+            break
+        }
+    }
+    if ($tocTitleIndex -lt 0) {
+        return [pscustomobject]@{ Markdown = $Markdown; Rewritten = $false }
+    }
+    $tocEndIndex = -1
+    for ($i = $tocTitleIndex + 1; $i -lt $lines.Count; $i++) {
+        if ($tocLineRegex.IsMatch($lines[$i])) {
+            $tocEndIndex = $i
+        } elseif ($lines[$i].Trim() -ne '' -and $tocEndIndex -ge 0) {
+            break
+        }
+    }
+    if ($tocEndIndex -lt $tocTitleIndex) {
+        return [pscustomobject]@{ Markdown = $Markdown; Rewritten = $false }
+    }
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+    for ($i = $tocTitleIndex + 1; $i -le $tocEndIndex; $i++) {
+        $line = $lines[$i]
+        $m = $tocLineRegex.Match($line)
+        if ($m.Success) {
+            [void]$entries.Add([pscustomobject]@{
+                SectionNum = $m.Groups['num'].Value
+                Title      = $m.Groups['title'].Value.Trim()
+                FullLink   = $line.Trim()
+            })
+        }
+    }
+    if ($entries.Count -eq 0) {
+        return [pscustomobject]@{ Markdown = $Markdown; Rewritten = $false }
+    }
+
+    $topLevelToTitle = @{}
+    foreach ($e in $entries) {
+        $first = $e.SectionNum -replace '\..*$', ''
+        if (-not $topLevelToTitle.ContainsKey($first)) {
+            $topLevelToTitle[$first] = $e.Title
+        }
+    }
+    $groups = @{}
+    foreach ($e in $entries) {
+        $first = $e.SectionNum -replace '\..*$', ''
+        if (-not $groups.ContainsKey($first)) {
+            $groups[$first] = [System.Collections.Generic.List[object]]::new()
+        }
+        [void]$groups[$first].Add($e)
+    }
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('Table of Contents')
+    [void]$sb.AppendLine()
+    $firstKeys = $groups.Keys | Sort-Object { [int]$_ }
+    foreach ($key in $firstKeys) {
+        $title = $topLevelToTitle[$key]
+        [void]$sb.AppendLine('<details>')
+        [void]$sb.AppendLine("<summary>$key $title</summary>")
+        [void]$sb.AppendLine()
+        foreach ($e in $groups[$key]) {
+            $indent = '  ' * (($e.SectionNum -split '\.').Count - 1)
+            [void]$sb.AppendLine("$indent- $($e.FullLink)")
+        }
+        [void]$sb.AppendLine('</details>')
+        [void]$sb.AppendLine()
+    }
+    $newToc = $sb.ToString().TrimEnd($newLine.ToCharArray())
+    $before = ($lines[0..($tocTitleIndex - 1)] -join $newLine).TrimEnd()
+    $afterStart = $tocEndIndex + 1
+    $after = if ($afterStart -lt $lines.Count) { $newLine + ($lines[$afterStart..($lines.Count - 1)] -join $newLine) } else { '' }
+    $result = $before + $newLine + $newLine + $newToc + $after
+
+    [pscustomobject]@{
+        Markdown   = $result
+        Rewritten  = $true
+    }
+}
+
 function ConvertTo-OpenSpecNormalizedEncodedBracketUrls {
     [CmdletBinding()]
     param(
@@ -1023,6 +1160,45 @@ function Repair-OpenSpecCrossSpecLinks {
     }
 }
 
+function Repair-OpenSpecSectionNumberLinks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $issues = New-Object System.Collections.Generic.List[object]
+    $result = $Markdown
+
+    # In-document links like [5.3.8](#Section_guid) often have no guid->section mapping
+    # (Word bookmark pair missing in converted output). When the link text is a section
+    # number, rewrite to [5.3.8](#Section_5.3.8) so they resolve to our injected anchors.
+    $pattern = [regex]::new(
+        '\[(?<num>\d+(?:\.\d+)*)\]\(#Section_[a-f0-9]{32}\)',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    $rewriteCount = $pattern.Matches($result).Count
+    $result = $pattern.Replace($result, {
+        param($m)
+        $num = $m.Groups['num'].Value
+        "[$num](#Section_$num)"
+    })
+
+    if ($rewriteCount -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'SectionNumberLinksRepaired'
+            Severity = 'Info'
+            Count = $rewriteCount
+            Reason = 'In-document section links (GUID anchors) were rewritten to section number anchors.'
+        })
+    }
+
+    [pscustomobject]@{
+        Markdown = $result
+        Issues = $issues.ToArray()
+    }
+}
+
 function Resolve-OpenSpecLinkTarget {
     [CmdletBinding()]
     param(
@@ -1176,6 +1352,49 @@ function Set-OpenSpecDocumentTitle {
     }
 }
 
+function Remove-OpenSpecFrontMatterBoilerplate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $result = $Markdown
+    $removed = $false
+    $newLine = [Environment]::NewLine
+
+    # Block from "Intellectual Property Rights Notice" (or similar) through the revision table, ending before "Table of Contents".
+    $blockRegex = [regex]::new(
+        '(?s)(\r?\n)(Intellectual Property Rights Notice.*?)(\r?\n\r?\n)(Table of Contents)',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    $match = $blockRegex.Match($result)
+    if ($match.Success) {
+        $blockContent = $match.Groups[2].Value
+        $lastUpdated = $null
+        $dateRowRegex = [regex]::new('\|\s*(\d{1,2}/\d{1,2}/\d{4})\s*\|')
+        $dateMatches = $dateRowRegex.Matches($blockContent)
+        if ($dateMatches.Count -gt 0) {
+            $lastMatch = $dateMatches[$dateMatches.Count - 1]
+            $lastUpdated = $lastMatch.Groups[1].Value
+        }
+        $replacement = $match.Groups[1].Value
+        if ($lastUpdated) {
+            $replacement += "Last updated: $lastUpdated" + $newLine + $newLine
+        } else {
+            $replacement += $match.Groups[3].Value
+        }
+        $replacement += $match.Groups[4].Value
+        $result = $result.Substring(0, $match.Index) + $replacement + $result.Substring($match.Index + $match.Length)
+        $removed = $true
+    }
+
+    [pscustomobject]@{
+        Markdown = $result
+        Removed  = $removed
+    }
+}
+
 function Add-OpenSpecSectionAnchors {
     [CmdletBinding()]
     param(
@@ -1212,6 +1431,137 @@ function Add-OpenSpecSectionAnchors {
     [pscustomobject]@{
         Markdown       = $lines -join $newLine
         InjectedCount  = $injectedCount
+    }
+}
+
+function Add-OpenSpecMissingSectionAnchorsFromToc {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $newLine = [Environment]::NewLine
+    $lines = [System.Collections.Generic.List[string]]::new($Markdown -split '\r?\n')
+    $injectedCount = 0
+
+    # Collect (sectionNum, title) from TOC lines: [N.N Title](#Section_N.N)
+    $tocEntryRegex = [regex]::new('^\s*\[(?<num>\d+(?:\.\d+)*)\s+(?<title>[^\]]*)\]\(#Section_(?<sec>\d+(?:\.\d+)*)\)\s*$')
+    $tocEntries = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in $lines) {
+        $m = $tocEntryRegex.Match($line)
+        if ($m.Success -and $m.Groups['num'].Value -eq $m.Groups['sec'].Value) {
+            [void]$tocEntries.Add([pscustomobject]@{ SectionNum = $m.Groups['num'].Value; Title = $m.Groups['title'].Value.Trim() })
+        }
+    }
+
+    # Which Section_N.N anchors already exist?
+    $existingAnchors = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($line in $lines) {
+        if ($line -match '^\s*<a\s+id="(Section_\d+(?:\.\d+)*)"\s*></a>\s*$') {
+            [void]$existingAnchors.Add($Matches[1])
+        }
+    }
+
+    # Missing: (sectionNum, title) from TOC where anchor is missing. Keep TOC order.
+    $missingList = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($e in $tocEntries) {
+        $id = "Section_$($e.SectionNum)"
+        if (-not $existingAnchors.Contains($id) -and -not $seen.Contains($id)) {
+            [void]$seen.Add($id)
+            [void]$missingList.Add([pscustomobject]@{ SectionNum = $e.SectionNum; Title = $e.Title })
+        }
+    }
+    if ($missingList.Count -eq 0) {
+        return [pscustomobject]@{ Markdown = $Markdown; InjectedCount = 0 }
+    }
+
+    # Assign each missing section to the first line (in doc order) that matches its title.
+    # Prefer heading lines that contain the title; else use a non-heading line that equals the title exactly.
+    $lineIndexToSection = @{}
+    $assignedLines = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($entry in $missingList) {
+        $title = $entry.Title
+        if ([string]::IsNullOrWhiteSpace($title)) { continue }
+        $found = $false
+        for ($i = 0; $i -lt $lines.Count -and -not $found; $i++) {
+            if ($assignedLines.Contains($i)) { continue }
+            $line = $lines[$i]
+            $lineTrim = $line.Trim()
+            $isHeading = $line -match '^\s*#{1,6}\s+(.+)$'
+            $content = if ($isHeading) { $Matches[1].Trim() } else { $lineTrim }
+            $matchesTitle = $content -like "*$title*"
+            $exactMatch = $content -ceq $title
+            if (-not $matchesTitle -and -not $exactMatch) { continue }
+            if (-not $isHeading -and -not $exactMatch) { continue }
+            $lineIndexToSection[$i] = $entry.SectionNum
+            [void]$assignedLines.Add($i)
+            $found = $true
+        }
+    }
+
+    # Insert anchors in reverse line order so indices stay valid.
+    foreach ($idx in ($lineIndexToSection.Keys | Sort-Object -Descending)) {
+        $sectionNum = $lineIndexToSection[$idx]
+        $anchorId = "Section_$sectionNum"
+        $lines.Insert($idx, "<a id=`"$anchorId`"></a>")
+        $injectedCount++
+    }
+
+    [pscustomobject]@{
+        Markdown       = $lines -join $newLine
+        InjectedCount  = $injectedCount
+    }
+}
+
+function Repair-OpenSpecSectionGuidLinksByHeadingMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $newLine = [Environment]::NewLine
+    $lineArray = $Markdown -split '\r?\n'
+    $titleToSection = @{}
+
+    for ($i = 0; $i -lt $lineArray.Count; $i++) {
+        $line = $lineArray[$i]
+        if ($line -match '^\s*<a\s+id="(Section_\d+(?:\.\d+)*)"\s*></a>\s*$') {
+            $sectionId = $Matches[1]
+            $sectionNum = $sectionId -replace '^Section_', ''
+            $nextLine = if ($i + 1 -lt $lineArray.Count) { $lineArray[$i + 1] } else { '' }
+            if ($nextLine -match '^\s*#{1,6}\s+(?<title>.+)$') {
+                $title = $Matches['title'].Trim()
+                $norm = ($title -replace '\s+', ' ').Trim()
+                if (-not $titleToSection.ContainsKey($norm)) { $titleToSection[$norm] = $sectionId }
+                $withoutNum = $title -replace '^\d+(?:\.\d+)*\s+', ''
+                $normWithout = ($withoutNum -replace '\s+', ' ').Trim()
+                if ($normWithout -and -not $titleToSection.ContainsKey($normWithout)) { $titleToSection[$normWithout] = $sectionId }
+            }
+        }
+    }
+
+    $guidLinkRegex = [regex]::new('\[(?<text>[^\]]+)\]\(#Section_[a-fA-F0-9]{32}\)')
+    $linksRepaired = 0
+    foreach ($m in $guidLinkRegex.Matches($Markdown)) {
+        $norm = ($m.Groups['text'].Value -replace '\*+', '' -replace '\s+', ' ').Trim()
+        if ($titleToSection.ContainsKey($norm) -or $titleToSection.ContainsKey($m.Groups['text'].Value.Trim())) { $linksRepaired++ }
+    }
+    $result = $guidLinkRegex.Replace($Markdown, {
+        param($m)
+        $rawText = $m.Groups['text'].Value
+        $norm = ($rawText -replace '\*+', '' -replace '\s+', ' ').Trim()
+        $sectionId = $null
+        if ($titleToSection.ContainsKey($norm)) { $sectionId = $titleToSection[$norm] }
+        if (-not $sectionId -and $titleToSection.ContainsKey($rawText.Trim())) { $sectionId = $titleToSection[$rawText.Trim()] }
+        if ($sectionId) { "[$rawText](#$sectionId)" } else { $m.Value }
+    })
+
+    [pscustomobject]@{
+        Markdown       = $result
+        LinksRepaired  = $linksRepaired
     }
 }
 
@@ -1268,9 +1618,14 @@ function Add-OpenSpecGlossaryAnchorsAndRepairLinks {
                 }
                 $normalizedTerm = $term.Trim()
                 $termToSlug[$normalizedTerm] = $slug
-                if ($term -match '\(([^)]+)\)\s*$') {
-                    $abbrev = $Matches[1].Trim()
+                if ($term -match '^(.+?)\s+\(([^)]+)\)\s*$') {
+                    $abbrev = $Matches[2].Trim()
+                    $termBeforeParen = $Matches[1].Trim()
                     $termToSlug[$abbrev] = $slug
+                    $termToSlug[$termBeforeParen] = $slug
+                    if ($abbrev.Length -gt 0 -and -not $abbrev.EndsWith('s')) {
+                        $termToSlug["$abbrev`s"] = $slug
+                    }
                 }
                 if ($normalizedTerm.EndsWith('s') -eq $false -and $normalizedTerm.Length -gt 1) {
                     $termToSlug["$normalizedTerm`s"] = $slug
