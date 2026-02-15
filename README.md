@@ -34,7 +34,7 @@ These folders are tracked with `.gitkeep`, while their contents are ignored via 
 - `Get-OpenSpecDownloadLink` - Gets download URLs for PDF and/or DOCX.
 - `Save-OpenSpecDocument` - Downloads selected documents (accepts pipeline from `Get-OpenSpecCatalog` or `Get-OpenSpecDownloadLink`).
 - `Test-OpenSpecDownload` - End-to-end validation for a set of protocol IDs.
-- `Convert-OpenSpecToMarkdown` - Converts downloaded DOCX/PDF files to Markdown (supports `-Parallel -ThrottleLimit N` on PowerShell 7+).
+- `Convert-OpenSpecToMarkdown` - Converts downloaded DOCX/PDF files to Markdown (supports `-Parallel -ThrottleLimit N` on PowerShell 7+). By default removes the back-of-document index section (page numbers are not meaningful in Markdown); use `-RemoveDocumentIndex:$false` to keep it.
 - `Invoke-OpenSpecConversionPipeline` - Download + convert in one step; use `-Parallel -ThrottleLimit N` to run conversions in parallel.
 - `Get-OpenSpecConversionReport` - Reads conversion report artifacts from a converted-specs output tree.
 - `Test-OpenSpecMarkdownFidelity` - Runs lightweight fidelity checks on generated Markdown (headings, tables, anchors, TOC links).
@@ -79,6 +79,13 @@ Test-OpenSpecMarkdownFidelity -OutputPath $ConvertedPath
 # Generate an index README for the converted specs (e.g. for publish branch)
 Update-OpenSpecIndex -Path $ConvertedPath -UseCatalogTitles
 Update-OpenSpecIndex -Path $ConvertedPath -UseCatalogTitles -IncludeDescription
+Update-OpenSpecIndex -Path $ConvertedPath -Title 'RDP Specifications' -UseCatalogTitles -IncludeDescription  # custom title
+Update-OpenSpecIndex -Path $ConvertedPath -Title 'RDP Specifications' -UseCatalogTitles -IncludeDescription -OverviewProtocolIds MS-RDSOD  # overview first
+
+# Include overview documents (e.g. Remote Desktop Services Overview MS-RDSOD; not in main catalog)
+$overview = [pscustomobject]@{ ProtocolId='MS-RDSOD'; SpecPageUrl='https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdsod/072543f9-4bd4-4dc6-ab97-9a04bf9d2c6a' }
+Get-OpenSpecDownloadLink -InputObject $overview -Format DOCX | Save-OpenSpecDocument -OutputPath $DownloadPath -Force
+Convert-OpenSpecToMarkdown -Path "$DownloadPath/[MS-RDSOD]-230313.docx" -OutputPath $ConvertedPath -Force
 
 # Compare converted markdown structure to live Learn pages
 Compare-OpenSpecToLiveHtml -OutputPath $ConvertedPath -ProtocolId MS-RDPEWA,MS-RDPBCGR

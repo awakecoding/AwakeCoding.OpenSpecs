@@ -16,7 +16,9 @@ function Invoke-OpenSpecConversionPipeline {
 
         [switch]$Parallel,
 
-        [int]$ThrottleLimit = 4
+        [int]$ThrottleLimit = 4,
+
+        [switch]$RemoveDocumentIndex = $true
     )
 
     if (-not $ProtocolId -and -not $Query) {
@@ -31,5 +33,5 @@ function Invoke-OpenSpecConversionPipeline {
     }
 
     $toConvert = $downloadResults | Where-Object { $_.Status -in 'Downloaded', 'Exists' }
-    $toConvert | Convert-OpenSpecToMarkdown -OutputPath $OutputPath -Force:$Force -Parallel:$Parallel -ThrottleLimit $ThrottleLimit
+    $toConvert | Convert-OpenSpecToMarkdown -OutputPath $OutputPath -Force:$Force -Parallel:$Parallel -ThrottleLimit $ThrottleLimit -RemoveDocumentIndex:$RemoveDocumentIndex
 }

@@ -15,7 +15,9 @@ function Convert-OpenSpecToMarkdown {
 
         [switch]$Parallel,
 
-        [int]$ThrottleLimit = 4
+        [int]$ThrottleLimit = 4,
+
+        [switch]$RemoveDocumentIndex = $true
     )
 
     begin {
@@ -49,9 +51,10 @@ function Convert-OpenSpecToMarkdown {
             $outputPathArg = $OutputPath
             $forceArg = $Force
             $sourceFormatArg = $SourceFormat
+            $removeIndexArg = $RemoveDocumentIndex
             $items | ForEach-Object -Parallel {
                 Import-Module (Join-Path $using:moduleBase 'AwakeCoding.OpenSpecs.psd1') -Force | Out-Null
-                Convert-OpenSpecToMarkdown -Path $_.Path -OutputPath $using:outputPathArg -Force:$using:forceArg -SourceFormat $using:sourceFormatArg
+                Convert-OpenSpecToMarkdown -Path $_.Path -OutputPath $using:outputPathArg -Force:$using:forceArg -SourceFormat $using:sourceFormatArg -RemoveDocumentIndex:$using:removeIndexArg
             } -ThrottleLimit $ThrottleLimit
             return
         }
@@ -141,7 +144,7 @@ function Convert-OpenSpecToMarkdown {
 
             $rawMarkdown = Get-Content -LiteralPath $conversionStep.OutputPath -Raw
             $normalized = ConvertTo-OpenSpecTextLayout -Markdown $rawMarkdown
-            $cleaned = Invoke-OpenSpecMarkdownCleanup -Markdown $normalized.Markdown -CurrentProtocolId $protocolId
+            $cleaned = Invoke-OpenSpecMarkdownCleanup -Markdown $normalized.Markdown -CurrentProtocolId $protocolId -RemoveDocumentIndex:$RemoveDocumentIndex
 
             $allIssues = @()
             if ($normalized.Issues) {

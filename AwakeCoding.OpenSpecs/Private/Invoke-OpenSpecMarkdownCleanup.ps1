@@ -5,11 +5,35 @@ function Invoke-OpenSpecMarkdownCleanup {
         [string]$Markdown,
 
         [Parameter(Mandatory)]
-        [string]$CurrentProtocolId
+        [string]$CurrentProtocolId,
+
+        [switch]$RemoveDocumentIndex = $true
     )
 
     $issues = New-Object System.Collections.Generic.List[object]
     $result = $Markdown
+
+    if ($RemoveDocumentIndex) {
+        $indexResult = Remove-OpenSpecDocumentIndex -Markdown $result
+        $result = $indexResult.Markdown
+        if ($indexResult.Removed) {
+            [void]$issues.Add([pscustomobject]@{
+                Type = 'DocumentIndexRemoved'
+                Severity = 'Info'
+                Reason = 'Back-of-document index section was removed (page numbers are not meaningful in Markdown).'
+            })
+        }
+    }
+
+    $titleResult = Set-OpenSpecDocumentTitle -Markdown $result -CurrentProtocolId $CurrentProtocolId
+    $result = $titleResult.Markdown
+    if ($titleResult.Normalized) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'DocumentTitleNormalized'
+            Severity = 'Info'
+            Reason = 'Document title was normalized to a single H1 heading.'
+        })
+    }
 
     $tableResult = ConvertFrom-OpenSpecHtmlTables -Markdown $result
     $result = $tableResult.Markdown
@@ -35,12 +59,40 @@ function Invoke-OpenSpecMarkdownCleanup {
     $result = $guidResult.Markdown
     foreach ($issue in $guidResult.Issues) { [void]$issues.Add($issue) }
 
+    $crossSpecResult = Repair-OpenSpecCrossSpecLinks -Markdown $result -CurrentProtocolId $CurrentProtocolId
+    $result = $crossSpecResult.Markdown
+    foreach ($issue in $crossSpecResult.Issues) { [void]$issues.Add($issue) }
+
     $mathResult = ConvertTo-OpenSpecNormalizedMathText -Markdown $result
     $result = $mathResult.Markdown
     foreach ($issue in $mathResult.Issues) { [void]$issues.Add($issue) }
 
     $result = Convert-OpenSpecInlineHtmlToMarkdown -Text $result
     $result = Remove-OpenSpecStandaloneTableTagLines -Text $result
+
+    $anchorResult = Add-OpenSpecSectionAnchors -Markdown $result
+    $result = $anchorResult.Markdown
+    if ($anchorResult.InjectedCount -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'SectionAnchorsInjected'
+            Severity = 'Info'
+            Count = $anchorResult.InjectedCount
+            Reason = 'Section anchor tags were added so TOC and in-document links resolve correctly.'
+        })
+    }
+
+    $glossaryResult = Add-OpenSpecGlossaryAnchorsAndRepairLinks -Markdown $result
+    $result = $glossaryResult.Markdown
+    if ($glossaryResult.AnchorsInjected -gt 0 -or $glossaryResult.LinksRepaired -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'GlossaryAnchorsAndLinks'
+            Severity = 'Info'
+            AnchorsInjected = $glossaryResult.AnchorsInjected
+            LinksRepaired = $glossaryResult.LinksRepaired
+            Reason = 'Glossary term anchors were added and #gt_ links were rewritten so they resolve.'
+        })
+    }
+
     $newLine = [Environment]::NewLine
     $result = [regex]::Replace($result, "(`r?`n){3,}", "$newLine$newLine")
 
@@ -911,6 +963,66 @@ function Resolve-OpenSpecGuidSectionAnchors {
     }
 }
 
+function Repair-OpenSpecCrossSpecLinks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown,
+
+        [Parameter(Mandatory)]
+        [string]$CurrentProtocolId
+    )
+
+    $issues = New-Object System.Collections.Generic.List[object]
+    $result = $Markdown
+    $rewriteCount = 0
+
+    # Links like ](#Section_<32hex>) are Word bookmark IDs. When they point to another
+    # spec (cross-reference), the GUID is not in the current document, so they break.
+    # Rewrite them to ](../ProtocolId/ProtocolId.md) using [MS-XXX] from the link text
+    # or from the same line (e.g. References: "[MS-RDPBCGR] ... \"[Title](#Section_guid)\"").
+    $pattern = '\[([^\]]+)\]\(#Section_([a-f0-9]{32})\)'
+    $matches = [regex]::Matches($result, $pattern)
+    $currentIdUpper = $CurrentProtocolId.ToUpperInvariant()
+
+    foreach ($m in ($matches | Sort-Object -Property { $_.Index } -Descending)) {
+        $linkText = $m.Groups[1].Value
+        $nlIdx = $result.LastIndexOf("`n", [Math]::Min($m.Index, $result.Length - 1))
+        $lineStart = if ($nlIdx -ge 0) { $nlIdx + 1 } else { 0 }
+        $lineEndIdx = $result.IndexOf("`n", $m.Index)
+        $lineEnd = if ($lineEndIdx -ge 0) { $lineEndIdx } else { $result.Length }
+        $line = $result.Substring($lineStart, $lineEnd - $lineStart)
+
+        $protocolId = $null
+        if ($linkText -match '^(MS|MC)-[A-Z0-9\-]+$') {
+            $protocolId = $linkText
+        }
+        elseif ($line -match '\[(MS-[A-Z0-9\-]+|MC-[A-Z0-9\-]+)\]') {
+            $protocolId = $Matches[1]
+        }
+
+        if ($protocolId -and $protocolId.ToUpperInvariant() -ne $currentIdUpper) {
+            $replacement = "[$linkText](../$protocolId/$protocolId.md)"
+            $result = $result.Substring(0, $m.Index) + $replacement + $result.Substring($m.Index + $m.Length)
+            $rewriteCount++
+        }
+    }
+
+    if ($rewriteCount -gt 0) {
+        [void]$issues.Add([pscustomobject]@{
+            Type = 'CrossSpecLinksRepaired'
+            Severity = 'Info'
+            Count = $rewriteCount
+            Reason = 'Cross-spec references (GUID anchors) were rewritten to relative spec paths.'
+        })
+    }
+
+    [pscustomobject]@{
+        Markdown = $result
+        Issues = $issues.ToArray()
+    }
+}
+
 function Resolve-OpenSpecLinkTarget {
     [CmdletBinding()]
     param(
@@ -997,4 +1109,210 @@ function Remove-OpenSpecStandaloneTableTagLines {
     )
 
     return $result
+}
+
+function Remove-OpenSpecDocumentIndex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $result = $Markdown
+    $removed = $false
+
+    # Match the back-of-document index section: heading "# N Index" (e.g. "# 8 Index", "# 9 Index").
+    # Do not match "Index of Security Parameters" or other subsections.
+    $indexHeadingRegex = [regex]::new('(?m)^# \d+ Index\s*$')
+    $match = $indexHeadingRegex.Match($result)
+    if ($match.Success) {
+        $result = $result.Substring(0, $match.Index).TrimEnd()
+        $removed = $true
+
+        # Remove any trailing anchor line(s) that only served the index heading (optional).
+        $trailingAnchorRegex = [regex]::new('(?ms)(\r?\n)(<a\s+id="[^"]+"></a>\s*)+$')
+        $result = $trailingAnchorRegex.Replace($result, '')
+
+        # Remove the "N Index" TOC entry so we don't leave a dead link.
+        $result = [regex]::Replace($result, '(?m)^\s*\[\d+ Index\]\(#Section_\d+\)\s*\r?\n', '')
+    }
+
+    [pscustomobject]@{
+        Markdown = $result
+        Removed  = $removed
+    }
+}
+
+function Set-OpenSpecDocumentTitle {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown,
+
+        [Parameter(Mandatory)]
+        [string]$CurrentProtocolId
+    )
+
+    $result = $Markdown
+    $normalized = $false
+
+    # Replace leading "**[MS-XXX]:**\n\n**Full Title**" with a single "# [MS-XXX]: Full Title" H1.
+    $escapedId = [regex]::Escape($CurrentProtocolId)
+    $titlePattern = [regex]::new(
+        '^\s*\*\*(?:\[' + $escapedId + '\]|' + $escapedId + ')\s*:\s*\*\*\s*\r?\n\r?\n\*\*(?<title>[^*]+)\*\*',
+        [System.Text.RegularExpressions.RegexOptions]::Multiline
+    )
+    $match = $titlePattern.Match($result)
+    if ($match.Success) {
+        $title = $match.Groups['title'].Value.Trim()
+        $replacement = "# [$CurrentProtocolId]: $title"
+        $result = $result.Substring(0, $match.Index) + $replacement + $result.Substring($match.Index + $match.Length)
+        $normalized = $true
+    }
+
+    [pscustomobject]@{
+        Markdown    = $result
+        Normalized  = $normalized
+    }
+}
+
+function Add-OpenSpecSectionAnchors {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $newLine = [Environment]::NewLine
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $injectedCount = 0
+
+    # Heading pattern: optional leading whitespace, 1-6 hashes, space, section number (e.g. 1, 1.1, 2.2.2.2.1.1.1), space, rest.
+    $headingRegex = [regex]::new('^\s*(#{1,6})\s+(\d+(?:\.\d+)*)\s+(.+)$')
+
+    $i = 0
+    $lineArray = $Markdown -split '\r?\n'
+    while ($i -lt $lineArray.Count) {
+        $line = $lineArray[$i]
+        $headingMatch = $headingRegex.Match($line)
+        if ($headingMatch.Success) {
+            $sectionNum = $headingMatch.Groups[2].Value
+            $anchorId = "Section_$sectionNum"
+            $anchorLine = "<a id=`"$anchorId`"></a>"
+            $prevLine = if ($lines.Count -gt 0) { $lines[$lines.Count - 1].Trim() } else { '' }
+            if ($prevLine -ne $anchorLine) {
+                [void]$lines.Add($anchorLine)
+                $injectedCount++
+            }
+        }
+        [void]$lines.Add($line)
+        $i++
+    }
+
+    [pscustomobject]@{
+        Markdown       = $lines -join $newLine
+        InjectedCount  = $injectedCount
+    }
+}
+
+function Add-OpenSpecGlossaryAnchorsAndRepairLinks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Markdown
+    )
+
+    $newLine = [Environment]::NewLine
+    $lineArray = [System.Collections.Generic.List[string]]::new($Markdown -split '\r?\n')
+    $termToSlug = @{}
+    $insertedSlugs = @{}
+    $injectedCount = 0
+
+    # Find the Glossary section: heading like "1.1 Glossary" or "## 1.1 Glossary".
+    $glossaryHeadingRegex = [regex]::new('^\s*(#{1,6})\s+(?<num>\d+(?:\.\d+)*)\s+Glossary\s*$')
+    $anyHeadingRegex = [regex]::new('^\s*(#+)\s+.+$')
+    $glossaryDefRegex = [regex]::new('^\s*\*\*(?<term>[^*]+)\*\*\s*:\s*')
+
+    $i = 0
+    $inGlossary = $false
+    $glossaryLevel = 0
+    while ($i -lt $lineArray.Count) {
+        $line = $lineArray[$i]
+        $headMatch = $glossaryHeadingRegex.Match($line)
+        if ($headMatch.Success) {
+            $inGlossary = $true
+            $glossaryLevel = $headMatch.Groups[1].Value.Length
+            $i++
+            continue
+        }
+        if ($inGlossary) {
+            $headOnly = $anyHeadingRegex.Match($line)
+            if ($headOnly.Success -and $headOnly.Groups[1].Value.Length -le $glossaryLevel) {
+                $inGlossary = $false
+            }
+        }
+        if ($inGlossary) {
+            $defMatch = $glossaryDefRegex.Match($line)
+            if ($defMatch.Success) {
+                $term = $defMatch.Groups['term'].Value.Trim()
+                $slug = $term -replace '\s+', '-' -replace '[^\w\-]', '' -replace '-+', '-' -replace '^-|-$', ''
+                $slug = $slug.ToLowerInvariant()
+                if ([string]::IsNullOrWhiteSpace($slug)) { $slug = "term-$i" }
+                $slug = "gt_$slug"
+                if (-not $insertedSlugs.ContainsKey($slug)) {
+                    $insertedSlugs[$slug] = $true
+                    $anchorLine = "<a id=`"$slug`"></a>"
+                    $lineArray.Insert($i, $anchorLine)
+                    $injectedCount++
+                    $i++
+                }
+                $normalizedTerm = $term.Trim()
+                $termToSlug[$normalizedTerm] = $slug
+                if ($term -match '\(([^)]+)\)\s*$') {
+                    $abbrev = $Matches[1].Trim()
+                    $termToSlug[$abbrev] = $slug
+                }
+                if ($normalizedTerm.EndsWith('s') -eq $false -and $normalizedTerm.Length -gt 1) {
+                    $termToSlug["$normalizedTerm`s"] = $slug
+                }
+            }
+        }
+        $i++
+    }
+
+    $result = $lineArray -join $newLine
+
+    # Rewrite [text](#gt_guid) to [text](#gt_slug) using link text -> slug map.
+    $linkRegex = [regex]::new('\[(?<text>[^\]]+)\]\(#gt_[a-f0-9\-]{36}\)')
+    $linksRepaired = 0
+    foreach ($match in $linkRegex.Matches($result)) {
+        $norm = ($match.Groups['text'].Value -replace '\*+', '').Trim()
+        if ($termToSlug.ContainsKey($norm) -or $termToSlug.ContainsKey($match.Groups['text'].Value.Trim())) {
+            $linksRepaired++
+        }
+    }
+    $result = $linkRegex.Replace($result, {
+        param($m)
+        $rawText = $m.Groups['text'].Value
+        $normalized = ($rawText -replace '\*+', '').Trim()
+        $slug = $null
+        if ($termToSlug.ContainsKey($normalized)) {
+            $slug = $termToSlug[$normalized]
+        }
+        elseif ($termToSlug.ContainsKey($rawText.Trim())) {
+            $slug = $termToSlug[$rawText.Trim()]
+        }
+        if ($slug) {
+            "[$rawText](#$slug)"
+        }
+        else {
+            $m.Value
+        }
+    })
+
+    [pscustomobject]@{
+        Markdown         = $result
+        AnchorsInjected  = $injectedCount
+        LinksRepaired    = $linksRepaired
+    }
 }

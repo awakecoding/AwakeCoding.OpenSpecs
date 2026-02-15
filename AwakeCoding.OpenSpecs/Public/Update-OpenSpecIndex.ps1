@@ -4,9 +4,13 @@ function Update-OpenSpecIndex {
         [Parameter(Mandatory)]
         [string]$Path,
 
+        [string]$Title = 'Microsoft Open Specifications',
+
         [switch]$UseCatalogTitles = $true,
 
-        [switch]$IncludeDescription = $false
+        [switch]$IncludeDescription = $false,
+
+        [string[]]$OverviewProtocolIds = @()
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -37,6 +41,9 @@ function Update-OpenSpecIndex {
         $mdFile = Join-Path -Path $dir.FullName -ChildPath "$specName.md"
 
         if (-not (Test-Path -LiteralPath $mdFile)) {
+            $mdFile = Join-Path -Path $dir.FullName -ChildPath 'README.md'
+        }
+        if (-not (Test-Path -LiteralPath $mdFile)) {
             $mdFile = Join-Path -Path $dir.FullName -ChildPath 'index.md'
         }
 
@@ -45,18 +52,18 @@ function Update-OpenSpecIndex {
         }
 
         $mdFileName = [System.IO.Path]::GetFileName($mdFile)
-        $title = ''
+        $entryTitle = ''
         $description = ''
 
         $catalogEntry = $catalogMap[$specName]
         if ($catalogEntry) {
-            $title = $catalogEntry.Title
+            $entryTitle = $catalogEntry.Title
             if ($IncludeDescription -and $catalogEntry.Description) {
                 $description = $catalogEntry.Description
             }
         }
 
-        if ([string]::IsNullOrWhiteSpace($title)) {
+        if ([string]::IsNullOrWhiteSpace($entryTitle)) {
             $lines = Get-Content -LiteralPath $mdFile -TotalCount 30 -ErrorAction SilentlyContinue
             $protocolLabelRegex = [regex]::new('^\*\*\[?(?:MS|MC)-[A-Z0-9-]+\]?\s*:\s*\*\*$', 'IgnoreCase')
             $boldLineRegex = [regex]::new('^\*\*(.+)\*\*$')
@@ -73,45 +80,75 @@ function Update-OpenSpecIndex {
                         if ($candidate -like "*$pat*") { $isBoilerplate = $true; break }
                     }
                     if (-not $isBoilerplate -and $candidate.Length -gt 2) {
-                        $title = $candidate
+                        $entryTitle = $candidate
                         break
                     }
                 }
             }
         }
 
-        if ([string]::IsNullOrWhiteSpace($title)) {
-            $title = $specName
+        if ([string]::IsNullOrWhiteSpace($entryTitle)) {
+            $entryTitle = $specName
         }
 
         [void]$entries.Add([pscustomobject]@{
             Name        = $specName
-            Title       = $title
+            Title       = $entryTitle
             Description = $description
             Link        = "$specName/$mdFileName"
         })
     }
 
-    $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('# Microsoft Open Specifications')
-    [void]$sb.AppendLine()
-    [void]$sb.AppendLine("$($entries.Count) protocol specifications converted to Markdown.")
-    [void]$sb.AppendLine()
+    $overviewIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($id in $OverviewProtocolIds) { [void]$overviewIds.Add($id.Trim()) }
 
-    if ($IncludeDescription) {
-        [void]$sb.AppendLine('| Protocol | Title | Description |')
-        [void]$sb.AppendLine('|---|---|---|')
-        foreach ($entry in $entries) {
-            $descEscaped = ($entry.Description -replace '\|', ', ' -replace '\r?\n', ' ').Trim()
-            [void]$sb.AppendLine("| [$($entry.Name)]($($entry.Link)) | $($entry.Title) | $descEscaped |")
-        }
+    $overviewEntries = @($entries | Where-Object { $overviewIds.Contains($_.Name) })
+    $specEntries = @($entries | Where-Object { -not $overviewIds.Contains($_.Name) })
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine("# $Title")
+    [void]$sb.AppendLine()
+    $totalCount = $entries.Count
+    if ($overviewEntries.Count -gt 0 -and $specEntries.Count -gt 0) {
+        [void]$sb.AppendLine("$totalCount documents converted to Markdown (overview and protocol specifications).")
     }
     else {
-        [void]$sb.AppendLine('| Protocol | Title |')
-        [void]$sb.AppendLine('|---|---|')
-        foreach ($entry in $entries) {
-            [void]$sb.AppendLine("| [$($entry.Name)]($($entry.Link)) | $($entry.Title) |")
+        [void]$sb.AppendLine("$totalCount protocol specifications converted to Markdown.")
+    }
+    [void]$sb.AppendLine()
+
+    $writeTable = {
+        param($list, $includeDesc)
+        if ($includeDesc) {
+            [void]$sb.AppendLine('| Protocol | Title | Description |')
+            [void]$sb.AppendLine('|---|---|---|')
+            foreach ($entry in $list) {
+                $descEscaped = ($entry.Description -replace '\|', ', ' -replace '\r?\n', ' ').Trim()
+                [void]$sb.AppendLine("| [$($entry.Name)]($($entry.Link)) | $($entry.Title) | $descEscaped |")
+            }
         }
+        else {
+            [void]$sb.AppendLine('| Protocol | Title |')
+            [void]$sb.AppendLine('|---|---|')
+            foreach ($entry in $list) {
+                [void]$sb.AppendLine("| [$($entry.Name)]($($entry.Link)) | $($entry.Title) |")
+            }
+        }
+    }
+
+    if ($overviewEntries.Count -gt 0) {
+        [void]$sb.AppendLine('## Overview')
+        [void]$sb.AppendLine()
+        & $writeTable $overviewEntries $IncludeDescription
+        [void]$sb.AppendLine()
+    }
+
+    if ($specEntries.Count -gt 0) {
+        if ($overviewEntries.Count -gt 0) {
+            [void]$sb.AppendLine('## Protocol specifications')
+            [void]$sb.AppendLine()
+        }
+        & $writeTable $specEntries $IncludeDescription
     }
 
     $readmePath = Join-Path -Path $Path -ChildPath 'README.md'

@@ -52,14 +52,13 @@ try {
     Get-ChildItem -LiteralPath $convPath -Directory | ForEach-Object {
         $name = $_.Name
         $md = Join-Path $_.FullName "$name.md"
-        if (-not (Test-Path -LiteralPath $md)) {
-            $md = Join-Path $_.FullName 'index.md'
-        }
+        if (-not (Test-Path -LiteralPath $md)) { $md = Join-Path $_.FullName 'README.md' }
+        if (-not (Test-Path -LiteralPath $md)) { $md = Join-Path $_.FullName 'index.md' }
         if (-not (Test-Path -LiteralPath $md)) { return }
 
         $dest = Join-Path $pubPath $name
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
-        Copy-Item -LiteralPath $md -Destination (Join-Path $dest 'index.md') -Force
+        Copy-Item -LiteralPath $md -Destination (Join-Path $dest 'README.md') -Force
 
         $media = Join-Path $_.FullName 'media'
         if (Test-Path -LiteralPath $media -PathType Container) {
