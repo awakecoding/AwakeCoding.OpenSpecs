@@ -58,7 +58,7 @@ try {
 
         $dest = Join-Path $pubPath $name
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
-        Copy-Item -LiteralPath $md -Destination (Join-Path $dest 'README.md') -Force
+        Copy-Item -LiteralPath $md -Destination $dest -Force
 
         $media = Join-Path $_.FullName 'media'
         if (Test-Path -LiteralPath $media -PathType Container) {

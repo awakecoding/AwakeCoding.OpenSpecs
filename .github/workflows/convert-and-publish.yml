@@ -49,7 +49,7 @@ jobs:
             if (-not (Test-Path -LiteralPath $md)) { return }
             $dest = Join-Path $publish $name
             New-Item -Path $dest -ItemType Directory -Force | Out-Null
-            Copy-Item -LiteralPath $md -Destination (Join-Path $dest 'README.md') -Force
+            Copy-Item -LiteralPath $md -Destination $dest -Force
             $media = Join-Path $_.FullName 'media'
             if (Test-Path -LiteralPath $media -PathType Container) {
               Copy-Item -LiteralPath $media -Destination $dest -Recurse -Force
